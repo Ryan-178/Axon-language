@@ -18,15 +18,35 @@ struct Opts {
     positional: Vec<String>,
     // everything after "--" (used by `run` to pass args to the compiled program)
     passthrough: Vec<String>,
+    /// additional libraries to link (`-l LLVM-C`), repeatable
+    libs: Vec<String>,
+    /// additional library search paths (`-L C:\...\lib`), repeatable
+    lib_paths: Vec<String>,
 }
 
 fn parse_opts(args: &[String]) -> Opts {
-    let mut opts = Opts { out: None, o0: false, json: false, positional: Vec::new(), passthrough: Vec::new() };
+    let mut opts = Opts {
+        out: None,
+        o0: false,
+        json: false,
+        positional: Vec::new(),
+        passthrough: Vec::new(),
+        libs: Vec::new(),
+        lib_paths: Vec::new(),
+    };
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "-o" if i + 1 < args.len() => {
                 opts.out = Some(args[i + 1].clone());
+                i += 2;
+            }
+            "-l" if i + 1 < args.len() => {
+                opts.libs.push(args[i + 1].clone());
+                i += 2;
+            }
+            "-L" if i + 1 < args.len() => {
+                opts.lib_paths.push(args[i + 1].clone());
                 i += 2;
             }
             "--O0" => {
@@ -101,7 +121,7 @@ fn cmd_build(args: &[String]) {
     }
     // the first file is the entry; `import "..."` pulls in the rest
     let exe = opts.out.map(PathBuf::from).unwrap_or_else(|| default_exe(&opts.positional[0]));
-    match axon::build_paths_exe(&opts.positional, &exe, !opts.o0) {
+    match axon::build_paths_opts(&opts.positional, &exe, !opts.o0, &opts.libs, &opts.lib_paths) {
         Ok(()) => println!("{}", exe.display()),
         Err(diags) => {
             report(&diags, opts.json);
@@ -119,7 +139,7 @@ fn cmd_run(args: &[String]) {
     // program args: anything after "--"
     let prog_args = &opts.passthrough;
     let exe = temp_exe(&opts.positional[0]);
-    if let Err(diags) = axon::build_paths_exe(&opts.positional, &exe, !opts.o0) {
+    if let Err(diags) = axon::build_paths_opts(&opts.positional, &exe, !opts.o0, &opts.libs, &opts.lib_paths) {
         report(&diags, opts.json);
         std::process::exit(1);
     }

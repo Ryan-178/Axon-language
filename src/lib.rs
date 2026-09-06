@@ -298,9 +298,20 @@ pub fn build_sources_exe(sources: &[String], exe_path: &Path, opt: bool) -> Resu
 
 /// Compile from file paths (with import resolution) into an executable.
 pub fn build_paths_exe(paths: &[String], exe_path: &Path, opt: bool) -> Result<(), Vec<Diag>> {
+    build_paths_opts(paths, exe_path, opt, &[], &[])
+}
+
+/// like `build_paths_exe` with extra link libraries and search paths
+pub fn build_paths_opts(
+    paths: &[String],
+    exe_path: &Path,
+    opt: bool,
+    libs: &[String],
+    lib_paths: &[String],
+) -> Result<(), Vec<Diag>> {
     let obj_path = exe_path.with_extension("obj");
     compile_paths_to_object(paths, &obj_path, opt)?;
-    let link_result = link(&obj_path, exe_path);
+    let link_result = link_opts(&obj_path, exe_path, libs, lib_paths);
     if link_result.is_ok() {
         let _ = std::fs::remove_file(&obj_path);
     }
@@ -309,6 +320,11 @@ pub fn build_paths_exe(paths: &[String], exe_path: &Path, opt: bool) -> Result<(
 
 /// Link a native object file into an executable using clang.
 pub fn link(obj_path: &Path, exe_path: &Path) -> Result<(), Vec<Diag>> {
+    link_opts(obj_path, exe_path, &[], &[])
+}
+
+/// Link with additional libraries and library search paths.
+pub fn link_opts(obj_path: &Path, exe_path: &Path, libs: &[String], lib_paths: &[String]) -> Result<(), Vec<Diag>> {
     let clang = find_clang().ok_or_else(|| vec![Diag {
         stage: "link",
         file: u32::MAX,
@@ -319,12 +335,17 @@ pub fn link(obj_path: &Path, exe_path: &Path) -> Result<(), Vec<Diag>> {
             .into(),
     }])?;
 
-    let status = Command::new(&clang)
-        .arg(obj_path)
-        .arg("-o")
-        .arg(exe_path)
-        // 8 MB stack: large fixed-size arrays live on the stack (allocas)
-        .arg("-Wl,/STACK:8388608")
+    let mut cmd = Command::new(&clang);
+    cmd.arg(obj_path).arg("-o").arg(exe_path);
+    // 8 MB stack: large fixed-size arrays live on the stack (allocas)
+    cmd.arg("-Wl,/STACK:8388608");
+    for dir in lib_paths {
+        cmd.arg(format!("-L{dir}"));
+    }
+    for lib in libs {
+        cmd.arg(format!("-l{lib}"));
+    }
+    let status = cmd
         .status()
         .map_err(|e| vec![Diag {
             stage: "link",

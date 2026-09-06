@@ -1,0 +1,40 @@
+# SELF-HOSTING PROOF OF CONCEPT:
+# Axon driving the LLVM-C API through `extern def`, building real IR.
+# Pointers pass as `int` (8 bytes, ABI-identical on x86-64); string
+# literals pass as char*. The printed IR is real, verified output.
+#
+# Run: axon run examples\ffi_llvm.ax
+# (LLVM-C.dll must be findable: add LLVM's bin dir to PATH)
+
+extern def LLVMContextCreate() -> int
+extern def LLVMInt64TypeInContext(ctx: int) -> int
+extern def LLVMModuleCreateWithNameInContext(name: string, ctx: int) -> int
+extern def LLVMFunctionType(ret: int, params: int, count: int, varargs: int) -> int
+extern def LLVMAddFunction(m: int, name: string, fn_ty: int) -> int
+extern def LLVMAppendBasicBlockInContext(ctx: int, f: int, name: string) -> int
+extern def LLVMCreateBuilderInContext(ctx: int) -> int
+extern def LLVMPositionBuilderAtEnd(b: int, bb: int)
+extern def LLVMConstInt(ty: int, val: int, sign_ext: int) -> int
+extern def LLVMBuildAdd(b: int, lhs: int, rhs: int, name: string) -> int
+extern def LLVMBuildRet(b: int, v: int)
+extern def LLVMPrintModuleToString(m: int) -> string
+
+def main() -> int:
+    ctx = LLVMContextCreate()
+    m = LLVMModuleCreateWithNameInContext("axon_poc", ctx)
+
+    i64 = LLVMInt64TypeInContext(ctx)
+    fn_ty = LLVMFunctionType(i64, 0, 0, 0)
+    f = LLVMAddFunction(m, "answer", fn_ty)
+    bb = LLVMAppendBasicBlockInContext(ctx, f, "entry")
+
+    builder = LLVMCreateBuilderInContext(ctx)
+    LLVMPositionBuilderAtEnd(builder, bb)
+
+    twenty = LLVMConstInt(i64, 20, 0)
+    twenty_two = LLVMConstInt(i64, 22, 0)
+    the_sum = LLVMBuildAdd(builder, twenty, twenty_two, "the.sum")
+    LLVMBuildRet(builder, the_sum)
+
+    print(LLVMPrintModuleToString(m))
+    return 0

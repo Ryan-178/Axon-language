@@ -3,6 +3,17 @@
 Notable changes to the Axon compiler and language. Axon follows semver-ish
 minor bumps while pre-1.0: each minor version is a language milestone.
 
+## [0.8.1] - 2026-09-06
+
+### Added
+- `-l NAME` / `-L DIR` link flags: user programs can link arbitrary C
+  libraries (LLVM-C, crypto, ...).
+- Self-hosting proof of concept: `examples/ffi_llvm.ax` drives the LLVM-C
+  API from Axon (pointers pass as `int`, ABI-identical on x86-64) and emits
+  real IR — `define i64 @answer() { ret i64 42 }`.
+- Self-hosting feasibility assessment: `docs/selfhost.md` (capability
+  matrix, gap analysis, staged bootstrap plan, verdict: feasible).
+
 ## [0.8.0] - 2026-09-06
 
 ### Added
