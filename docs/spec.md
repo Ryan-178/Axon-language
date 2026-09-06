@@ -1,4 +1,4 @@
-# Axon Language Specification (v0.6)
+# Axon Language Specification (v0.7)
 
 Axon is an AI-native, statically typed, ahead-of-time compiled language with a
 Python-style syntax. Design goals: minimal syntax, explicit semantics, native
@@ -124,6 +124,36 @@ print(f"braces: {{literal}}")             # braces: {literal}
   ints format as decimal, floats as `%f` (6 decimals), bools as
   `true`/`false`.
 
+## Generic functions
+
+```axon
+def sort[T, N](arr: [T; N]) -> [T; N]:
+    result = arr
+    for i in range(N):
+        for j in range(N - 1 - i):
+            if result[j] > result[j + 1]:
+                t = result[j]
+                result[j] = result[j + 1]
+                result[j + 1] = t
+    return result
+
+sort([3, 1, 2])       # T = int,   N = 3
+sort([1.5, 0.5])      # T = float, N = 2
+sort(["b", "a"])      # T = string, N = 2
+```
+
+- Type parameters (`T`) and array-length parameters (`N`) are declared in
+  `[...]` after the function name. At most one length parameter per function.
+- Monomorphization: every distinct (type, length) combination at a call site
+  produces a dedicated instance at compile time; arguments are unified
+  against the declared parameter types (inferred — no explicit type
+  arguments).
+- The length parameter is a compile-time `int` constant inside the body
+  (`range(N)`, `N - 1`).
+- Operations on `T` are checked per instance: `sort` requires `<` on `T`
+  (int, float, string work; structs do not).
+- Generic functions cannot be `main` or `extern`.
+
 ## Value semantics (arrays and structs)
 
 Assignment, parameter passing, and returns **copy** the whole value (lowered
@@ -243,18 +273,17 @@ build/compare all land within ±15% of clang.
 ## Standard library
 
 `stdlib/stdlib.ax` is written **in Axon itself** and compiled together with
-the program: math (`abs/min/max/clamp/pow/gcd/lcm/isqrt/is_prime/hypot`
-+ `sqrt`/`floor`/`ceil` via FFI), search (`linear_search_8`,
-`binary_search_8`), sort (`bubble_sort_8`), and array helpers (`sum_8`,
-`max_8`, `min_8`, `reverse_8`). The `_8` suffix marks the fixed array size —
-generics are on the roadmap.
+the program: math (`abs/min/max/clamp/pow_i/gcd/lcm/isqrt/is_prime/hypot`
++ `sqrt`/`floor`/`ceil` via FFI), and generic search/sort/aggregation:
+`sort`, `linear_search`, `binary_search`, `max_of`, `min_of`, `reverse`,
+`sum_int`, `sum_float` — all parameterized by element type and length.
 
 ## Roadmap
 
 1. String indexing / iteration (needs a `char` type or substring slices).
 2. Format specifiers in f-strings (`{x:.2f}`); f-string multi-line.
-3. Memory: string interning or arena freeing (currently concatenation leaks).
-4. Core library written **in Axon itself** (algorithms, data structures).
+3. Import/module system (today: multi-file via CLI arguments).
+4. Memory: string interning or arena freeing (currently concatenation leaks).
 5. Self-hosting: rewrite the compiler in Axon.
-6. Standard library: math, crypto (保密性), collections, IO.
+6. Standard library expansion: containers, IO, crypto (保密性).
 7. Top-level statements as an implicit `main` (module-script mode).

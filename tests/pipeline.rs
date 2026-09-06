@@ -998,7 +998,7 @@ fn rejects_fstring_of_array() {
     assert!(msg.contains("cannot convert [int; 2] to string"), "{msg}");
 }
 
-// ---- standard library (written in Axon itself, v0.6) ----
+// ---- standard library (written in Axon itself, v0.7 generics) ----
 
 #[test]
 fn stdlib_math() {
@@ -1032,25 +1032,56 @@ fn stdlib_math() {
 }
 
 #[test]
-fn stdlib_search_and_sort() {
+fn stdlib_generic_sort_search() {
     let out = build_and_run_with_stdlib(
         r#"
         def main() -> int:
             arr = [5, 3, 8, 1, 9, 2, 7, 4]
-            sorted_arr = bubble_sort_8(arr)
+            sorted_arr = sort(arr)
             print(arr[0])                    # input untouched: value semantics
-            print(sum_8(sorted_arr))
-            print(max_8(arr))
-            print(min_8(arr))
-            print(linear_search_8(arr, 8))
-            print(linear_search_8(arr, 42))
-            print(binary_search_8(sorted_arr, 8))
-            print(binary_search_8(sorted_arr, 6))
-            print(reverse_8(arr)[0])
+            print(sum_int(arr))
+            print(max_of(arr))
+            print(min_of(arr))
+            print(linear_search(arr, 8))
+            print(linear_search(arr, 42))
+            print(binary_search(sorted_arr, 8))
+            print(binary_search(sorted_arr, 6))
+            print(reverse(arr)[0])
+            # same functions, other types and lengths
+            print(sort([3, 1])[0])
+            print(sort([2.5, 1.5, 0.5])[0])
+            print(sort(["pear", "apple", "fig"])[0])
+            print(binary_search([10, 20, 30], 20))
+            print(sum_float([1.5, 2.5]))
+            print(max_of(["pear", "apple"]))
             return 0
         "#,
     );
-    assert_eq!(out, "5\n39\n9\n1\n2\n-1\n6\n-1\n4\n");
+    assert_eq!(out, "5\n39\n9\n1\n2\n-1\n6\n-1\n4\n1\n0.500000\napple\n1\n4.000000\npear\n");
+}
+
+#[test]
+fn stdlib_sort_does_not_mutate() {
+    let out = build_and_run_with_stdlib(
+        r#"
+        def main() -> int:
+            a = [9, 8, 7]
+            b = sort(a)
+            print(a[0])
+            print(b[0])
+            print(b[2])
+            return 0
+        "#,
+    );
+    assert_eq!(out, "9\n7\n9\n");
+}
+
+#[test]
+fn rejects_generic_struct_sort() {
+    let msg = expect_compile_error(
+        "def sort[T, N](arr: [T; N]) -> [T; N]:\n    result = arr\n    for i in range(N):\n        for j in range(N - 1 - i):\n            if result[j] > result[j + 1]:\n                t = result[j]\n                result[j] = result[j + 1]\n                result[j + 1] = t\n    return result\n\nstruct P:\n    v: int\n\ndef main() -> int:\n    r = sort([P(v=1)])\n    return 0",
+    );
+    assert!(msg.contains("requires two int, two float, or two string operands, found (P, P)"), "{msg}");
 }
 
 #[test]
@@ -1059,4 +1090,28 @@ fn rejects_extern_main() {
         "extern def main() -> int",
     );
     assert!(msg.contains("'main' cannot be declared extern"), "{msg}");
+}
+
+#[test]
+fn rejects_generic_main() {
+    let msg = expect_compile_error(
+        "def main[T](x: T) -> T:\n    return x",
+    );
+    assert!(msg.contains("'main' cannot be generic"), "{msg}");
+}
+
+#[test]
+fn rejects_len_param_outside_generic() {
+    let msg = expect_compile_error(
+        "def f(arr: [int; N]) -> int:\n    return 0\n\ndef main() -> int:\n    return 0",
+    );
+    assert!(msg.contains("unknown array length 'N'"), "{msg}");
+}
+
+#[test]
+fn rejects_uninferable_len() {
+    let msg = expect_compile_error(
+        "def make[T, N]() -> [T; N]:\n    return [0]\n\ndef main() -> int:\n    print(make())\n    return 0",
+    );
+    assert!(msg.contains("cannot infer array length N"), "{msg}");
 }

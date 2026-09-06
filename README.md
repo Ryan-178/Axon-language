@@ -5,16 +5,20 @@ language. Python-style syntax on the surface, C++-class native performance
 underneath: programs compile through LLVM (O3) straight to machine code.
 
 ```axon
-struct Vec2:
-    x: int
-    y: int
-
-def add(a: Vec2, b: Vec2) -> Vec2:
-    return Vec2(x=a.x + b.x, y=a.y + b.y)
+def sort[T, N](arr: [T; N]) -> [T; N]:      # generic, monomorphized
+    result = arr
+    for i in range(N):
+        for j in range(N - 1 - i):
+            if result[j] > result[j + 1]:
+                t = result[j]
+                result[j] = result[j + 1]
+                result[j + 1] = t
+    return result
 
 def main() -> int:
-    total = add(Vec2(x=1, y=2), Vec2(x=3, y=4))
-    print(total.x + total.y)   # 10
+    nums = [5, 3, 8, 1]
+    print(f"sorted: {sort(nums)[0]}")   # sorted: 1
+    print(sort(["pear", "apple"])[0])   # apple
     return 0
 ```
 
@@ -24,6 +28,8 @@ def main() -> int:
   `#` comments, `x = 5` type inference, `and` / `or` / `not`, `[0] * n`
 - **Native speed** — LLVM O3 backend; measured at parity with `clang -O3`
   (benchmarks below)
+- **Generics** — `def sort[T, N](arr: [T; N])` monomorphized per call site;
+  no boxing, no runtime overhead
 - **AI-native tooling** — every diagnostic can be emitted as structured JSON
   (`--json`), the optimized IR is dumpable (`axon ir`), and the semantics are
   deliberately strict and deterministic so AI-generated code is verifiable
@@ -101,18 +107,19 @@ Native code is native code — Axon sits within noise of clang.
 |---|---|
 | `src/` | the compiler: lexer → parser → typecheck → LLVM codegen → clang link |
 | `src/llvm.rs` | hand-written LLVM-C FFI (no inkwell/llvm-sys) |
-| `examples/*.ax` | demo programs (hello, fib, primes, vectors, strings, benchmarks) |
-| `tests/pipeline.rs` | 50 end-to-end tests: compile → run → verify output |
+| `stdlib/stdlib.ax` | the standard library, written in Axon itself (generics) |
+| `examples/*.ax` | demo programs (hello, fib, primes, vectors, strings, benchmarks, stdlib_demo) |
+| `tests/pipeline.rs` | 70 end-to-end tests: compile → run → verify output |
 | `docs/spec.md` | full language specification and roadmap |
 
 ## Status
 
-v0.4 · Windows-first · 50/50 tests green.
+v0.7 · Windows-first · 70/70 tests green · CI on every push.
 
-Roadmap: `for` loops & f-strings → standard library written in Axon itself →
-self-hosting (compiler rewritten in Axon).
+Roadmap: import/module system → self-hosting (compiler rewritten in Axon).
 
-See [`docs/spec.md`](docs/spec.md) for the complete language specification.
+See [`docs/spec.md`](docs/spec.md) for the complete language specification
+and [`CHANGELOG.md`](CHANGELOG.md) for the release history.
 
 ## License
 

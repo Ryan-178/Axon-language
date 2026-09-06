@@ -19,6 +19,7 @@ impl std::fmt::Display for Type {
             Type::Bool => write!(f, "bool"),
             Type::Str => write!(f, "string"),
             Type::Void => write!(f, "void"),
+            Type::Array { elem, len } if *len == GENERIC_LEN => write!(f, "[{elem}; N]"),
             Type::Array { elem, len } => write!(f, "[{elem}; {len}]"),
             Type::Struct(name) => write!(f, "{name}"),
         }
@@ -48,6 +49,10 @@ pub struct Program {
     pub funcs: Vec<FnDecl>,
 }
 
+/// sentinel array length inside a generic declaration: `[T; N]` parses to
+/// this; the monomorphizer substitutes the concrete length per instance.
+pub const GENERIC_LEN: usize = usize::MAX;
+
 #[derive(Debug)]
 pub struct StructDecl {
     pub name: String,
@@ -55,9 +60,14 @@ pub struct StructDecl {
     pub pos: Pos,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FnDecl {
     pub name: String,
+    /// type/length parameters: `def sort[T, N](arr: [T; N]) -> [T; N]`
+    /// (empty for concrete functions; monomorphized at call sites)
+    pub type_params: Vec<String>,
+    /// which type param is the array length (usable as an int constant), if any
+    pub len_param: Option<String>,
     pub params: Vec<Param>,
     pub ret: Type,
     pub body: Block,
@@ -66,7 +76,7 @@ pub struct FnDecl {
     pub pos: Pos,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Param {
     pub name: String,
     pub ty: Type,

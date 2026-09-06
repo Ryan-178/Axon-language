@@ -1,17 +1,21 @@
-//! Axon parser: tokens -> AST (recursive descent, Python-style layout).
+﻿//! Axon parser: tokens -> AST (recursive descent, Python-style layout).
 
 use crate::ast::*;
 use crate::lexer::{FStrPart, Tok, Token};
 use crate::Diag;
 
 pub fn parse(tokens: Vec<Token>) -> Result<Program, Diag> {
-    Parser { toks: tokens, idx: 0, next_lit_id: 0 }.parse_program()
+    Parser { toks: tokens, idx: 0, next_lit_id: 0, cur_type_params: Vec::new(), cur_len_params: Vec::new() }.parse_program()
 }
 
 struct Parser {
     toks: Vec<Token>,
     idx: usize,
     next_lit_id: usize,
+    /// type/length parameters of the fn currently being parsed
+    cur_type_params: Vec<String>,
+    /// length parameter names actually used in the current fn (v0.7: max 1)
+    cur_len_params: Vec<String>,
 }
 
 impl Parser {
@@ -146,6 +150,26 @@ impl Parser {
             Tok::Ident(n) => n,
             _ => return Err(self.unexpected(&Tok::Ident("name".into()))),
         };
+        // optional generic header: `def name[T, N](...)`
+        let mut type_params: Vec<String> = Vec::new();
+        if *self.peek() == Tok::LBracket {
+            self.bump();
+            loop {
+                match self.bump() {
+                    Tok::Ident(n) => type_params.push(n),
+                    _ => return Err(self.unexpected(&Tok::Ident("type parameter".into()))),
+                }
+                match self.peek() {
+                    Tok::Comma => {
+                        self.bump();
+                    }
+                    Tok::RBracket => break,
+                    _ => return Err(self.unexpected(&Tok::RBracket)),
+                }
+            }
+            self.eat(&Tok::RBracket)?;
+        }
+        self.cur_type_params = type_params.clone();
         self.eat(&Tok::LParen)?;
         let mut params = Vec::new();
         if *self.peek() != Tok::RParen {
@@ -183,7 +207,20 @@ impl Parser {
         } else {
             self.block()?
         };
-        Ok(FnDecl { name, params, ret, body, is_extern, pos })
+        self.cur_type_params = Vec::new();
+        let len_param = self.cur_len_params.first().cloned();
+        if self.cur_len_params.len() > 1 {
+            let n = self.cur_len_params[1].clone();
+            self.cur_len_params = Vec::new();
+            return Err(Diag {
+                stage: "parse",
+                line: pos.line,
+                col: pos.col,
+                message: format!("only one length parameter is supported (found '{n}' as well)"),
+            });
+        }
+        self.cur_len_params = Vec::new();
+        Ok(FnDecl { name, type_params, len_param, params, ret, body, is_extern, pos })
     }
 
     fn ty(&mut self) -> Result<Type, Diag> {
@@ -205,6 +242,23 @@ impl Parser {
                             line: self.pos().line,
                             col: self.pos().col,
                             message: "array length must be a positive integer".into(),
+                        })
+                    }
+                    // `[T; N]` inside a generic declaration: length parameter
+                    Tok::Ident(n) if self.cur_type_params.contains(&n) => {
+                        if !self.cur_len_params.contains(&n) {
+                            self.cur_len_params.push(n);
+                        }
+                        crate::ast::GENERIC_LEN
+                    }
+                    Tok::Ident(n) => {
+                        return Err(Diag {
+                            stage: "parse",
+                            line: self.pos().line,
+                            col: self.pos().col,
+                            message: format!(
+                                "unknown array length '{n}' (length parameters must be declared in the fn header, e.g. def f[T, N](arr: [T; N]))"
+                            ),
                         })
                     }
                     _ => return Err(self.unexpected(&Tok::Int(0))),
@@ -400,7 +454,7 @@ impl Parser {
         Ok(Stmt::If { cond, then_block, else_block: else_cur, pos })
     }
 
-    /// f"pre{expr}post" → "pre" + str(expr) + "post"
+    /// f"pre{expr}post" 鈫?"pre" + str(expr) + "post"
     fn desugar_fstring(&mut self, parts: Vec<FStrPart>, pos: Pos) -> Result<Expr, Diag> {
         let mut exprs: Vec<Expr> = Vec::new();
         for p in parts {
@@ -411,7 +465,7 @@ impl Parser {
                     }
                 }
                 FStrPart::ExprTokens(toks) => {
-                    let mut sub = Parser { toks, idx: 0, next_lit_id: self.next_lit_id };
+                    let mut sub = Parser { toks, idx: 0, next_lit_id: self.next_lit_id, cur_type_params: Vec::new(), cur_len_params: Vec::new() };
                     let value = sub.expr()?;
                     self.next_lit_id = sub.next_lit_id;
                     let lit_id = self.lit_id();
@@ -689,3 +743,5 @@ impl Parser {
         }
     }
 }
+
+

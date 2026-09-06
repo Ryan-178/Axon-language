@@ -22,9 +22,10 @@ fn init_target() {
     });
 }
 
-pub fn generate_ir_text(program: &Program, opt: bool) -> Result<String, String> {
+pub fn generate_ir_text(program: &Program, opt: bool, call_map: &HashMap<usize, String>) -> Result<String, String> {
     unsafe {
         let mut g = Gen::create();
+        g.call_map = call_map.clone();
         let result = g.build_module(program, opt).map(|_| {
             let ir_c = LLVMPrintModuleToString(g.module);
             let ir = CStr::from_ptr(ir_c).to_string_lossy().into_owned();
@@ -36,9 +37,10 @@ pub fn generate_ir_text(program: &Program, opt: bool) -> Result<String, String> 
     }
 }
 
-pub fn generate_to_object(program: &Program, obj_path: &std::path::Path, opt: bool) -> Result<(), String> {
+pub fn generate_to_object(program: &Program, obj_path: &std::path::Path, opt: bool, call_map: &HashMap<usize, String>) -> Result<(), String> {
     unsafe {
         let mut g = Gen::create();
+        g.call_map = call_map.clone();
         let result = g
             .build_module(program, opt)
             .and_then(|_| g.emit_object(obj_path));
@@ -81,6 +83,8 @@ struct Gen {
     /// stack of (break_target, continue_target) for nested loops
     loop_stack: Vec<(LLVMBasicBlockRef, LLVMBasicBlockRef)>,
     loop_count: usize,
+    /// generic call node address -> mangled instance name (from typecheck)
+    call_map: HashMap<usize, String>,
 }
 
 impl Gen {
@@ -115,6 +119,7 @@ impl Gen {
             externs: HashMap::new(),
             loop_stack: Vec::new(),
             loop_count: 0,
+            call_map: HashMap::new(),
         }
     }
 
@@ -258,6 +263,11 @@ impl Gen {
 
         // declare all user functions (two-pass, enables mutual recursion)
         for f in &program.funcs {
+            if !f.type_params.is_empty() {
+                // generic declarations are never emitted directly; codegen
+                // only sees their monomorphized instances
+                continue;
+            }
             let mut param_tys: Vec<LLVMTypeRef> = f.params.iter().map(|p| self.ty_of(&p.ty)).collect();
             let ret_ty = self.ty_of(&f.ret);
             let fn_ty = LLVMFunctionType(ret_ty, param_tys.as_mut_ptr(), param_tys.len() as u32, 0);
@@ -743,22 +753,25 @@ impl Gen {
                 .map(|(_, t)| t.clone())
                 .ok_or_else(|| format!("internal error: unknown variable '{name}' in type hint")),
             Expr::Call { name, .. } => {
-                if let Some(info) = self.fns.get(name) {
+                // generic calls resolve to their monomorphized instance
+                let node = expr as *const Expr as usize;
+                let eff = self.call_map.get(&node).cloned().unwrap_or_else(|| name.clone());
+                if let Some(info) = self.fns.get(&eff) {
                     return Ok(info.ret.clone());
                 }
-                if self.struct_fields.contains_key(name) {
-                    return Ok(Type::Struct(name.clone()));
+                if self.struct_fields.contains_key(&eff) {
+                    return Ok(Type::Struct(eff.clone()));
                 }
-                if name == "print" {
+                if eff == "print" {
                     return Ok(Type::Void);
                 }
-                if name == "len" {
+                if eff == "len" {
                     return Ok(Type::Int);
                 }
-                if name == "str" {
+                if eff == "str" {
                     return Ok(Type::Str);
                 }
-                Err(format!("internal error: unknown call '{name}' in type hint"))
+                Err(format!("internal error: unknown call '{eff}' in type hint"))
             }
             Expr::Unary { expr, .. } => self.type_hint(expr, locals),
             Expr::Binary { op, lhs, rhs, .. } => match op {
@@ -1008,6 +1021,13 @@ impl Gen {
                 self.emit_struct_construction(name, fields, *lit_id, locals)
             }
             Expr::Call { name, args, pos, lit_id } => {
+                // generic calls are routed to their monomorphized instance
+                let node = expr as *const Expr as usize;
+                let routed: Option<String> = self.call_map.get(&node).cloned();
+                let name: &str = match &routed {
+                    Some(s) => s.as_str(),
+                    None => name.as_str(),
+                };
                 // builtins
                 if name == "print" {
                     return self.print_builtin(args, locals);

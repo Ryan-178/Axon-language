@@ -42,8 +42,13 @@ pub fn compile_to_object(src: &str, obj_path: &Path, opt: bool) -> Result<(), Ve
 /// Compile multiple Axon sources as one program (merged namespace).
 pub fn compile_sources_to_object(sources: &[String], obj_path: &Path, opt: bool) -> Result<(), Vec<Diag>> {
     let program = parse_sources(sources)?;
-    typecheck::check(&program).map_err(|d| vec![d])?;
-    codegen::generate_to_object(&program, obj_path, opt).map_err(|m| vec![Diag::internal(m)])?;
+    let out = typecheck::check(&program).map_err(|d| vec![d])?;
+    let mut program = program;
+    // only concrete functions reach codegen: drop generic declarations,
+    // append their monomorphized instances
+    program.funcs.retain(|f| f.type_params.is_empty());
+    program.funcs.extend(out.instances);
+    codegen::generate_to_object(&program, obj_path, opt, &out.call_map).map_err(|m| vec![Diag::internal(m)])?;
     Ok(())
 }
 
@@ -55,8 +60,11 @@ pub fn compile_to_ir(src: &str, opt: bool) -> Result<String, Vec<Diag>> {
 /// Multiple sources → LLVM IR text.
 pub fn compile_sources_to_ir(sources: &[String], opt: bool) -> Result<String, Vec<Diag>> {
     let program = parse_sources(sources)?;
-    typecheck::check(&program).map_err(|d| vec![d])?;
-    codegen::generate_ir_text(&program, opt).map_err(|m| vec![Diag::internal(m)])
+    let out = typecheck::check(&program).map_err(|d| vec![d])?;
+    let mut program = program;
+    program.funcs.retain(|f| f.type_params.is_empty());
+    program.funcs.extend(out.instances);
+    codegen::generate_ir_text(&program, opt, &out.call_map).map_err(|m| vec![Diag::internal(m)])
 }
 
 fn parse_sources(sources: &[String]) -> Result<ast::Program, Vec<Diag>> {

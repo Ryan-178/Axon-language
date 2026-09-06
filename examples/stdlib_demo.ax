@@ -1,4 +1,5 @@
 # Standard library demo — compile with: axon run examples/stdlib_demo.ax stdlib/stdlib.ax
+# Generic functions work for any element type and array length.
 def main() -> int:
     # math
     print(isqrt(99))
@@ -7,15 +8,23 @@ def main() -> int:
     print(is_prime(97))
     print(hypot(3.0, 4.0))
 
-    # sort / search (value semantics: sort returns a copy)
+    # generic sort / search over ints
     arr = [5, 3, 8, 1, 9, 2, 7, 4]
-    sorted_arr = bubble_sort_8(arr)
-    print(arr[0])                          # 5 — input untouched
-    print(binary_search_8(sorted_arr, 8))  # index of 8 in sorted copy
-    print(sum_8(arr))
-    print(max_8(arr))
-    print(linear_search_8(reverse_8(arr), 9))
+    sorted_arr = sort(arr)
+    print(arr[0])                             # 5 — input untouched (value semantics)
+    print(binary_search(sorted_arr, 8))       # index of 8 in the sorted copy
 
-    # f-strings work with library results too
+    # the same functions instantiate for other types and lengths
+    small = [3, 1]
+    print(sort(small)[0])
+    print(sort([2.5, 1.5, 0.5])[0])
+    print(sort(["pear", "apple"])[0])
+    print(linear_search(["x", "y", "z"], "y"))
+    print(sum_int([10, 20, 30, 40]))
+    print(max_of([4, 44, 14]))
+    print(min_of(["pear", "apple", "fig"]))
+    print(reverse([1, 2, 3])[0])
+
+    # f-strings compose with library results
     print(f"sqrt(2) ~= {sqrt(2.0)}")
     return 0
