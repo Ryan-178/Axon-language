@@ -174,3 +174,102 @@ def reverse[T, N](arr: [T; N]) -> [T; N]:
         i = i + 1
         j = j - 1
     return result
+
+# ---- raw memory & dynamic arrays (self-hosting foundation, v0.9) ----
+# Addresses are plain `int` (pointer-sized). The load/store builtins are
+# unsafe by nature: bounds and lifetimes are the caller's responsibility.
+
+extern def malloc(size: int) -> int
+extern def realloc(p: int, size: int) -> int
+extern def free(p: int)
+extern def memcpy(dst: int, src: int, n: int) -> int
+
+# growable array of 8-byte slots (ints, bools as 0/1, strings via as_ptr)
+struct Vec:
+    data: int
+    len: int
+    cap: int
+
+def vec_new() -> Vec:
+    return Vec(data=0, len=0, cap=0)
+
+def vec_push(v: Vec, item: int) -> Vec:
+    if v.len == v.cap:
+        newcap = v.cap * 2
+        if newcap == 0:
+            newcap = 8
+        v.data = realloc(v.data, newcap * 8)
+        v.cap = newcap
+    store_i64(v.data + v.len * 8, item)
+    v.len = v.len + 1
+    return v
+
+def vec_get(v: Vec, i: int) -> int:
+    return load_i64(v.data + i * 8)
+
+def vec_set(v: Vec, i: int, item: int):
+    store_i64(v.data + i * 8, item)
+
+def vec_free(v: Vec):
+    free(v.data)
+
+# ---- byte/string buffers ----
+
+def fill_zero(p: int, n: int):
+    i = 0
+    while i < n:
+        store_u8(p, i, 0)
+        i = i + 1
+
+def buf_new(cap: int) -> int:
+    b = malloc(cap)
+    fill_zero(b, cap)
+    return b
+
+def str_get(s: string, i: int) -> int:
+    return load_u8(s, i)
+
+# char classification (bytes as int)
+def is_digit(c: int) -> bool:
+    return c >= 48 and c <= 57
+
+def is_alpha(c: int) -> bool:
+    return (c >= 65 and c <= 90) or (c >= 97 and c <= 122)
+
+def is_space(c: int) -> bool:
+    return c == 32 or c == 9 or c == 10 or c == 13
+
+# ---- file IO ----
+
+extern def fopen(path: string, mode: string) -> int
+extern def fread(buf: int, size: int, count: int, f: int) -> int
+extern def fwrite(buf: int, size: int, count: int, f: int) -> int
+extern def fseek(f: int, off: int, origin: int) -> int
+extern def ftell(f: int) -> int
+extern def fclose(f: int) -> int
+
+# read an entire file as a string (empty string when it cannot be opened)
+def read_file(path: string) -> string:
+    f = fopen(path, "rb")
+    if f == 0:
+        return ""
+    fseek(f, 0, 2)
+    size = ftell(f)
+    fseek(f, 0, 0)
+    buf = malloc(size + 1)
+    fread(buf, 1, size, f)
+    store_u8(buf, size, 0)
+    fclose(f)
+    return as_string(buf)
+
+# write a string to a file (returns false when it cannot be opened)
+def write_file(path: string, content: string) -> bool:
+    f = fopen(path, "wb")
+    if f == 0:
+        return False
+    fwrite(as_ptr(content), 1, len(content), f)
+    fclose(f)
+    return True
+
+# run a shell command, returning its exit code (used to invoke clang)
+extern def system(cmd: string) -> int

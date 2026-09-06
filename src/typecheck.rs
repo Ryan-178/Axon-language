@@ -756,6 +756,133 @@ impl<'a> Tc<'a> {
                     }
                     return Ok(Type::Str);
                 }
+                // raw memory primitives (the self-hosting escape hatch):
+                // addresses are plain `int` (pointer-sized); use with care
+                if name == "load_i64" || name == "load_f64" {
+                    if args.len() != 1 || args[0].name.is_some() {
+                        return Err(Diag {
+                            stage: "type", file: self.cur_file,
+                            line: pos.line,
+                            col: pos.col,
+                            message: format!("{name} expects exactly 1 positional argument (address: int)"),
+                        });
+                    }
+                    let t = self.check_expr(&args[0].value, scopes)?;
+                    if t != Type::Int {
+                        return Err(Diag {
+                            stage: "type", file: self.cur_file,
+                            line: pos.line,
+                            col: pos.col,
+                            message: format!("{name} address must be int, found {t}"),
+                        });
+                    }
+                    if name == "load_f64" {
+                        return Ok(Type::Float);
+                    }
+                    return Ok(Type::Int);
+                }
+                if name == "load_u8" || name == "store_u8" {
+                    // byte access with offset; the base may be an `int`
+                    // address or a `string` (bytes of the string)
+                    let want_args = if name == "load_u8" { 2 } else { 3 };
+                    if args.len() != want_args || args.iter().any(|a| a.name.is_some()) {
+                        return Err(Diag {
+                            stage: "type", file: self.cur_file,
+                            line: pos.line,
+                            col: pos.col,
+                            message: format!(
+                                "{name} expects ({}, offset: int{})",
+                                if name == "load_u8" { "base: int|string)" } else { "base: int|string, value: int)" },
+                                if name == "store_u8" { "" } else { "" }
+                            ),
+                        });
+                    }
+                    let bt = self.check_expr(&args[0].value, scopes)?;
+                    let ot = self.check_expr(&args[1].value, scopes)?;
+                    if (bt != Type::Int && bt != Type::Str) || ot != Type::Int {
+                        return Err(Diag {
+                            stage: "type", file: self.cur_file,
+                            line: pos.line,
+                            col: pos.col,
+                            message: format!("{name} base/offset must be (int|string, int), found ({bt}, {ot})"),
+                        });
+                    }
+                    if name == "store_u8" {
+                        let vt = self.check_expr(&args[2].value, scopes)?;
+                        if vt != Type::Int {
+                            return Err(Diag {
+                                stage: "type", file: self.cur_file,
+                                line: pos.line,
+                                col: pos.col,
+                                message: format!("store_u8 value must be int, found {vt}"),
+                            });
+                        }
+                        return Ok(Type::Void);
+                    }
+                    return Ok(Type::Int);
+                }
+                if name == "store_i64" || name == "store_f64" {
+                    if args.len() != 2 || args.iter().any(|a| a.name.is_some()) {
+                        return Err(Diag {
+                            stage: "type", file: self.cur_file,
+                            line: pos.line,
+                            col: pos.col,
+                            message: format!("{name} expects (address: int, value)"),
+                        });
+                    }
+                    let at = self.check_expr(&args[0].value, scopes)?;
+                    let vt = self.check_expr(&args[1].value, scopes)?;
+                    let want = if name == "store_f64" { Type::Float } else { Type::Int };
+                    if at != Type::Int || vt != want {
+                        return Err(Diag {
+                            stage: "type", file: self.cur_file,
+                            line: pos.line,
+                            col: pos.col,
+                            message: format!("{name} expects (int, {}), found ({at}, {vt})", want),
+                        });
+                    }
+                    return Ok(Type::Void);
+                }
+                if name == "as_string" {
+                    if args.len() != 1 || args[0].name.is_some() {
+                        return Err(Diag {
+                            stage: "type", file: self.cur_file,
+                            line: pos.line,
+                            col: pos.col,
+                            message: "as_string expects exactly 1 positional argument (ptr: int)".into(),
+                        });
+                    }
+                    let t = self.check_expr(&args[0].value, scopes)?;
+                    if t != Type::Int {
+                        return Err(Diag {
+                            stage: "type", file: self.cur_file,
+                            line: pos.line,
+                            col: pos.col,
+                            message: format!("as_string expects int, found {t}"),
+                        });
+                    }
+                    return Ok(Type::Str);
+                }
+                if name == "as_ptr" {
+                    if args.len() != 1 || args[0].name.is_some() {
+                        return Err(Diag {
+                            stage: "type", file: self.cur_file,
+                            line: pos.line,
+                            col: pos.col,
+                            message: "as_ptr expects exactly 1 positional argument (s: string)".into(),
+                        });
+                    }
+                    let t = self.check_expr(&args[0].value, scopes)?;
+                    if t != Type::Str {
+                        return Err(Diag {
+                            stage: "type", file: self.cur_file,
+                            line: pos.line,
+                            col: pos.col,
+                            message: format!("as_ptr expects string, found {t}"),
+                        });
+                    }
+                    return Ok(Type::Int);
+                }
                 // generic call: unify arguments, monomorphize
                 if self.sigs.get(name).is_none() {
                     if self.generics.contains_key(name) {

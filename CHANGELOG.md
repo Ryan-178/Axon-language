@@ -3,6 +3,23 @@
 Notable changes to the Axon compiler and language. Axon follows semver-ish
 minor bumps while pre-1.0: each minor version is a language milestone.
 
+## [0.9.0] - 2026-09-06
+
+### Added
+- **Raw memory builtins** (self-hosting foundation): `load_i64`/`store_i64`,
+  `load_f64`/`store_f64`, `load_u8`/`store_u8` (byte access on `int`
+  addresses and on `string` bytes), and pointer reinterpretation
+  `as_string`/`as_ptr`. Addresses are plain `int`; unsafe by design.
+- stdlib: growable `Vec` (8-byte slots, write-back style: `v = vec_push(v, x)`,
+  `vec_get`/`vec_set`/`vec_free`), byte buffers (`buf_new`, `fill_zero`),
+  string byte access (`str_get`), char classification (`is_digit`, `is_alpha`,
+  `is_space`), file IO (`read_file`, `write_file` via FFI), and `system(cmd)`
+  for process spawning.
+
+### Fixed
+- Lexer: `>=` was lexed as `>` (a latent bug no earlier test caught —
+  `4 >= 5` is false under both). Added boundary-equality regression tests.
+
 ## [0.8.1] - 2026-09-06
 
 ### Added

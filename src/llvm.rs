@@ -81,6 +81,8 @@ extern "C" {
     pub fn LLVMBuildNot(b: LLVMBuilderRef, v: LLVMValueRef, name: *const c_char) -> LLVMValueRef;
     pub fn LLVMBuildFNeg(b: LLVMBuilderRef, v: LLVMValueRef, name: *const c_char) -> LLVMValueRef;
     pub fn LLVMBuildZExt(b: LLVMBuilderRef, v: LLVMValueRef, ty: LLVMTypeRef, name: *const c_char) -> LLVMValueRef;
+    pub fn LLVMBuildIntToPtr(b: LLVMBuilderRef, v: LLVMValueRef, ty: LLVMTypeRef, name: *const c_char) -> LLVMValueRef;
+    pub fn LLVMBuildPtrToInt(b: LLVMBuilderRef, v: LLVMValueRef, ty: LLVMTypeRef, name: *const c_char) -> LLVMValueRef;
     pub fn LLVMBuildTrunc(b: LLVMBuilderRef, v: LLVMValueRef, ty: LLVMTypeRef, name: *const c_char) -> LLVMValueRef;
     pub fn LLVMBuildBr(b: LLVMBuilderRef, dest: LLVMBasicBlockRef) -> LLVMValueRef;
     pub fn LLVMBuildCondBr(b: LLVMBuilderRef, cond: LLVMValueRef, then_bb: LLVMBasicBlockRef, else_bb: LLVMBasicBlockRef) -> LLVMValueRef;

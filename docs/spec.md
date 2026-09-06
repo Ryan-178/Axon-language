@@ -1,4 +1,4 @@
-# Axon Language Specification (v0.8)
+# Axon Language Specification (v0.9)
 
 Axon is an AI-native, statically typed, ahead-of-time compiled language with a
 Python-style syntax. Design goals: minimal syntax, explicit semantics, native
@@ -258,6 +258,24 @@ primary := INT | FLOAT | STRING | True | False
   prints a trailing newline. Floats print with `%f` (6 decimals).
 - `len(x)` — array: static length; string: byte length. Returns `int`.
 - `str(x)` — convert `int`/`float`/`bool`/`string` to `string`.
+
+## Raw memory (unsafe, for the standard library and systems code)
+
+Addresses are plain `int` (pointer-sized). These builtins are the escape
+hatch that lets the standard library implement growable containers and file
+IO in Axon itself; they perform no checks.
+
+- `load_i64(addr) -> int`, `store_i64(addr, v: int)`
+- `load_f64(addr) -> float`, `store_f64(addr, v: float)`
+- `load_u8(base, off) -> int`, `store_u8(base, off, v: int)` — `base` may be
+  an `int` address or a `string` (byte access into the string)
+- `as_string(p: int) -> string`, `as_ptr(s: string) -> int` — pointer
+  reinterpretation
+
+The stdlib builds on these: `struct Vec` (growable 8-byte slots:
+`vec_new`/`vec_push`/`vec_get`/`vec_set`/`vec_free` — write-back style,
+`v = vec_push(v, x)`), byte buffers, `read_file`/`write_file`, and
+`system(cmd)` for process spawning.
 
 ## Tooling contract (AI-native)
 

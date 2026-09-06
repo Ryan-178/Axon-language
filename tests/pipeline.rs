@@ -262,6 +262,36 @@ fn comparison_ops() {
 }
 
 #[test]
+fn comparison_boundary_cases() {
+    // regression: '>=' was once lexed as '>'
+    let out = build_and_run(
+        r#"
+        def ge(c: int) -> bool:
+            return c >= 65
+
+        def le(c: int) -> bool:
+            return c <= 65
+
+        def main() -> int:
+            print(5 >= 5)         # boundary: equal
+            print(5 >= 6)
+            print(5 > 5)          # strict: false
+            print(5 <= 5)         # boundary: equal
+            print(4 <= 5)
+            print(5 < 5)
+            print(ge(65))
+            print(ge(64))
+            print(ge(66))
+            print(le(65))
+            print(le(66))
+            print(le(64))
+            return 0
+        "#,
+    );
+    assert_eq!(out, "true\nfalse\nfalse\ntrue\ntrue\nfalse\ntrue\nfalse\ntrue\ntrue\nfalse\ntrue\n");
+}
+
+#[test]
 fn pass_statement() {
     let out = build_and_run(
         r#"
@@ -1198,4 +1228,84 @@ fn import_error_reports_importing_file() {
 fn string_sources_reject_imports() {
     let msg = expect_compile_error("import \"somewhere.ax\"\n\ndef main() -> int:\n    return 0");
     assert!(msg.contains("requires compiling from files"), "{msg}");
+}
+
+// ---- stdlib v0.9: raw memory, Vec, buffers, file IO ----
+
+#[test]
+fn stdlib_vec_grow_and_slots() {
+    let out = build_and_run_with_stdlib(
+        r#"
+        def main() -> int:
+            v = vec_new()
+            for i in range(100):
+                v = vec_push(v, i * i)
+            print(v.len)
+            print(vec_get(v, 0))
+            print(vec_get(v, 10))
+            print(vec_get(v, 99))
+            vec_set(v, 50, 7)
+            print(vec_get(v, 50))
+            vec_free(v)
+            # strings via as_ptr / as_string
+            sv = vec_new()
+            sv = vec_push(sv, as_ptr("alpha"))
+            sv = vec_push(sv, as_ptr("beta"))
+            print(as_string(vec_get(sv, 0)))
+            print(as_string(vec_get(sv, 1)))
+            vec_free(sv)
+            return 0
+        "#,
+    );
+    assert_eq!(out, "100\n0\n100\n9801\n7\nalpha\nbeta\n");
+}
+
+#[test]
+fn stdlib_str_bytes_and_classes() {
+    let out = build_and_run_with_stdlib(
+        r#"
+        def main() -> int:
+            s = "Axon9!"
+            print(str_get(s, 0))          # 'A' = 65
+            print(str_get(s, 4))          # '9' = 57
+            print(is_digit(str_get(s, 4)))
+            print(is_digit(str_get(s, 0)))
+            print(is_alpha(str_get(s, 0)))
+            print(is_space(str_get(s, 5)))
+            print(len(s))
+            return 0
+        "#,
+    );
+    assert_eq!(out, "65\n57\ntrue\nfalse\ntrue\nfalse\n6\n");
+}
+
+#[test]
+fn stdlib_file_io_roundtrip() {
+    let out = build_and_run_with_stdlib(
+        r#"
+        def main() -> int:
+            path = "axon_stdlib_test.txt"
+            ok = write_file(path, "hello from axon")
+            print(ok)
+            content = read_file(path)
+            print(content)
+            print(len(content))
+            print(read_file("definitely_missing_file_xyz.txt") == "")
+            return 0
+        "#,
+    );
+    assert!(out.starts_with("true\nhello from axon\n15\ntrue\n"), "{out}");
+}
+
+#[test]
+fn stdlib_system_spawn() {
+    let out = build_and_run_with_stdlib(
+        r#"
+        def main() -> int:
+            code = system("exit /b 7")
+            print(code)
+            return 0
+        "#,
+    );
+    assert_eq!(out, "7\n");
 }

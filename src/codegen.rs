@@ -1091,6 +1091,115 @@ impl Gen {
                         other => Err(format!("internal error: str on {other} at codegen")),
                     };
                 }
+                // raw memory primitives: int -> ptr, then load/store
+                if name == "load_i64" || name == "load_f64" || name == "load_u8" {
+                    if name == "load_u8" {
+                        // load_u8(base: int|string, offset: int)
+                        let (base, bt) = self.emit_expr(&args[0].value, locals)?;
+                        let (off, _ot) = self.emit_expr(&args[1].value, locals)?;
+                        let mut indices = [off];
+                        let ptr = match bt {
+                            Type::Str => {
+                                let n = self.cstr("mem.strptr");
+                                LLVMBuildGEP2(self.builder, self.i8, base, indices.as_mut_ptr(), 1, n.as_ptr())
+                            }
+                            _ => {
+                                let n = self.cstr("mem.ptr");
+                                let total = LLVMBuildAdd(self.builder, base, off, self.cstr("mem.addr").as_ptr());
+                                LLVMBuildIntToPtr(self.builder, total, self.ptr, n.as_ptr())
+                            }
+                        };
+                        let i8v = LLVMBuildLoad2(self.builder, self.i8, ptr, self.cstr("mem.u8").as_ptr());
+                        let ext = LLVMBuildZExt(self.builder, i8v, self.i64, self.cstr("mem.u8.ext").as_ptr());
+                        return Ok((ext, Type::Int));
+                    }
+                    if args.len() != 1 {
+                        return Err(format!("internal error: {name} expects 1 argument"));
+                    }
+                    let (v, t) = self.emit_expr(&args[0].value, locals)?;
+                    if t != Type::Int {
+                        return Err(format!("internal error: {name} address must be int"));
+                    }
+                    let n = self.cstr("mem.ptr");
+                    let ptr = LLVMBuildIntToPtr(self.builder, v, self.ptr, n.as_ptr());
+                    let (ty, out) = if name == "load_f64" {
+                        (self.f64t, Type::Float)
+                    } else {
+                        (self.i64, Type::Int)
+                    };
+                    let v2 = LLVMBuildLoad2(self.builder, ty, ptr, self.cstr("mem.load").as_ptr());
+                    return Ok((v2, out));
+                }
+                if name == "store_i64" || name == "store_f64" {
+                    if args.len() != 2 {
+                        return Err(format!("internal error: {name} expects 2 arguments"));
+                    }
+                    let (addr, at) = self.emit_expr(&args[0].value, locals)?;
+                    let (val, vt) = self.emit_expr(&args[1].value, locals)?;
+                    if at != Type::Int {
+                        return Err(format!("internal error: {name} address must be int"));
+                    }
+                    let want = if name == "store_f64" { Type::Float } else { Type::Int };
+                    if vt != want {
+                        return Err(format!("internal error: {name} value must be {want}"));
+                    }
+                    let n = self.cstr("mem.ptr");
+                    let ptr = LLVMBuildIntToPtr(self.builder, addr, self.ptr, n.as_ptr());
+                    LLVMBuildStore(self.builder, val, ptr);
+                    return Ok((std::ptr::null_mut(), Type::Void));
+                }
+                if name == "store_u8" {
+                    // store_u8(base: int|string, offset: int, value: int)
+                    if args.len() != 3 {
+                        return Err("internal error: store_u8 expects 3 arguments".into());
+                    }
+                    let (base, bt) = self.emit_expr(&args[0].value, locals)?;
+                    let (off, _ot) = self.emit_expr(&args[1].value, locals)?;
+                    let (val, vt) = self.emit_expr(&args[2].value, locals)?;
+                    if vt != Type::Int {
+                        return Err("internal error: store_u8 value must be int".into());
+                    }
+                    let mut indices = [off];
+                    let ptr = match bt {
+                        Type::Str => {
+                            let n = self.cstr("mem.strptr");
+                            LLVMBuildGEP2(self.builder, self.i8, base, indices.as_mut_ptr(), 1, n.as_ptr())
+                        }
+                        _ => {
+                            let n = self.cstr("mem.ptr");
+                            let total = LLVMBuildAdd(self.builder, base, off, self.cstr("mem.addr").as_ptr());
+                            LLVMBuildIntToPtr(self.builder, total, self.ptr, n.as_ptr())
+                        }
+                    };
+                    let trunc = LLVMBuildTrunc(self.builder, val, self.i8, self.cstr("mem.u8.t").as_ptr());
+                    LLVMBuildStore(self.builder, trunc, ptr);
+                    return Ok((std::ptr::null_mut(), Type::Void));
+                }
+                // pointer reinterpretation: int <-> string (same 8 bytes)
+                if name == "as_string" {
+                    if args.len() != 1 {
+                        return Err("internal error: as_string expects 1 argument".into());
+                    }
+                    let (v, t) = self.emit_expr(&args[0].value, locals)?;
+                    if t != Type::Int {
+                        return Err("internal error: as_string expects int".into());
+                    }
+                    let n = self.cstr("mem.asstr");
+                    let p = LLVMBuildIntToPtr(self.builder, v, self.ptr, n.as_ptr());
+                    return Ok((p, Type::Str));
+                }
+                if name == "as_ptr" {
+                    if args.len() != 1 {
+                        return Err("internal error: as_ptr expects 1 argument".into());
+                    }
+                    let (v, t) = self.emit_expr(&args[0].value, locals)?;
+                    if t != Type::Str {
+                        return Err("internal error: as_ptr expects string".into());
+                    }
+                    let n = self.cstr("mem.asint");
+                    let p = LLVMBuildPtrToInt(self.builder, v, self.i64, n.as_ptr());
+                    return Ok((p, Type::Int));
+                }
                 // struct construction: Name(field=value, ...)
                 if !self.fns.contains_key(name) {
                     if self.struct_fields.contains_key(name) {

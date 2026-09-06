@@ -398,7 +398,7 @@ pub fn lex(src: &str, file_id: u32) -> Result<Vec<Token>, Diag> {
                 if i + 1 < chars.len() && chars[i + 1] == '=' {
                     adv!();
                     adv!();
-                    out.push(Token { tok: Tok::Gt, pos });
+                    out.push(Token { tok: Tok::Ge, pos });
                 } else {
                     single!(Tok::Gt)
                 }
