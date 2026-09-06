@@ -1,4 +1,4 @@
-# Axon Language Specification (v0.7)
+# Axon Language Specification (v0.8)
 
 Axon is an AI-native, statically typed, ahead-of-time compiled language with a
 Python-style syntax. Design goals: minimal syntax, explicit semantics, native
@@ -167,10 +167,12 @@ data: [int; 50000] = [0] * 50000    # Python-style replication
 
 ## Program structure
 
-A program is a list of `struct`, `def`, and `extern def` declarations;
-execution starts at `main`.
+A program is a list of `import`, `struct`, `def`, and `extern def`
+declarations; execution starts at `main`.
 
 ```axon
+import "../stdlib/stdlib.ax"    # resolved relative to the importing file
+
 extern def sqrt(x: float) -> float    # C runtime function (FFI), no body
 
 def main() -> int:
@@ -181,8 +183,12 @@ def main() -> int:
 - `extern def` declares a C-runtime function: no body, resolved at link time
   from the default libraries. Extern functions cannot be named `main` and
   cannot use `string` params/returns yet (raw `ptr` semantics pending).
-- Multiple source files compile as **one merged namespace**:
-  `axon build main.ax stdlib/stdlib.ax` — declarations may live in any file.
+- **Imports** load another `.ax` file and merge it into one namespace.
+  Paths resolve relative to the importing file; each file is included
+  exactly once (canonical path); circular imports are compile errors.
+  `axon run main.ax` alone is enough — imports pull in dependencies.
+- Multiple entry files on the command line (`axon build a.ax b.ax`) are also
+  merged, with import resolution applied to each.
 
 `main` returns `int` (process exit code) or `void` (exit 0).
 
@@ -280,9 +286,9 @@ the program: math (`abs/min/max/clamp/pow_i/gcd/lcm/isqrt/is_prime/hypot`
 
 ## Roadmap
 
-1. String indexing / iteration (needs a `char` type or substring slices).
-2. Format specifiers in f-strings (`{x:.2f}`); f-string multi-line.
-3. Import/module system (today: multi-file via CLI arguments).
+1. Module qualification (`lib.sort(...)`), selective imports, package layout.
+2. String indexing / iteration (needs a `char` type or substring slices).
+3. Format specifiers in f-strings (`{x:.2f}`); f-string multi-line.
 4. Memory: string interning or arena freeing (currently concatenation leaks).
 5. Self-hosting: rewrite the compiler in Axon.
 6. Standard library expansion: containers, IO, crypto (保密性).

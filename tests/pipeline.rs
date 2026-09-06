@@ -384,7 +384,7 @@ fn rejects_bad_indentation() {
 #[test]
 fn rejects_top_level_statement() {
     let msg = expect_compile_error("print(1)");
-    assert!(msg.contains("expected 'def' or 'struct'"), "{msg}");
+    assert!(msg.contains("expected 'import', 'def' or 'struct'"), "{msg}");
 }
 
 // ---- arrays (v0.3) ----
@@ -1114,4 +1114,88 @@ fn rejects_uninferable_len() {
         "def make[T, N]() -> [T; N]:\n    return [0]\n\ndef main() -> int:\n    print(make())\n    return 0",
     );
     assert!(msg.contains("cannot infer array length N"), "{msg}");
+}
+
+// ---- import / module system (v0.8) ----
+
+use std::path::Path;
+
+fn tmp_dir(tag: &str) -> PathBuf {
+    let id = COUNTER.fetch_add(1, Ordering::SeqCst) + std::process::id() as usize;
+    let dir = std::env::temp_dir().join(format!("axon-import-{tag}-{id}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+#[test]
+fn import_transitive_and_include_once() {
+    let dir = tmp_dir("transitive");
+    std::fs::write(
+        dir.join("main.ax"),
+        "import \"lib.ax\"\nimport \"lib.ax\"\nimport \"sub/deep.ax\"\n\ndef main() -> int:\n    print(helper() + deep())\n    return 0\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("lib.ax"), "def helper() -> int:\n    return 40\n").unwrap();
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    std::fs::write(dir.join("sub").join("deep.ax"), "def deep() -> int:\n    return 2\n").unwrap();
+
+    let exe = dir.join("out.exe");
+    axon::build_paths_exe(
+        &[dir.join("main.ax").display().to_string()],
+        &exe,
+        true,
+    )
+    .expect("compilation failed");
+    let out = Command::new(&exe).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "42\n");
+}
+
+#[test]
+fn import_cycle_detected() {
+    let dir = tmp_dir("cycle");
+    std::fs::write(dir.join("a.ax"), "import \"b.ax\"\n\ndef fa() -> int:\n    return fb() + 1\n").unwrap();
+    std::fs::write(dir.join("b.ax"), "import \"a.ax\"\n\ndef fb() -> int:\n    return 1\n").unwrap();
+
+    let exe = dir.join("out.exe");
+    match axon::build_paths_exe(&[dir.join("a.ax").display().to_string()], &exe, true) {
+        Ok(()) => panic!("expected circular import error"),
+        Err(diags) => {
+            assert!(diags[0].message.contains("circular import"), "{:?}", diags[0]);
+            assert!(diags[0].message.contains("a.ax"), "{:?}", diags[0]);
+        }
+    }
+}
+
+#[test]
+fn import_missing_file() {
+    let dir = tmp_dir("missing");
+    std::fs::write(dir.join("main.ax"), "import \"nope.ax\"\n\ndef main() -> int:\n    return 0\n").unwrap();
+    let exe = dir.join("out.exe");
+    match axon::build_paths_exe(&[dir.join("main.ax").display().to_string()], &exe, true) {
+        Ok(()) => panic!("expected import error"),
+        Err(diags) => assert!(diags[0].message.contains("cannot open"), "{:?}", diags[0]),
+    }
+}
+
+#[test]
+fn import_error_reports_importing_file() {
+    let dir = tmp_dir("errfile");
+    std::fs::write(dir.join("main.ax"), "import \"lib.ax\"\n\ndef main() -> int:\n    print(helper())\n    return 0\n").unwrap();
+    std::fs::write(dir.join("lib.ax"), "def helper() -> int:\n    print(unknown_var)\n    return 0\n").unwrap();
+    let exe = dir.join("out.exe");
+    match axon::build_paths_exe(&[dir.join("main.ax").display().to_string()], &exe, true) {
+        Ok(()) => panic!("expected compile error"),
+        Err(diags) => {
+            let file = axon::files::name(diags[0].file);
+            assert!(file.contains("lib.ax"), "{:?} / {file}", diags[0]);
+            assert_eq!(diags[0].line, 2, "{:?}", diags[0]);
+            assert!(diags[0].message.contains("unknown variable 'unknown_var'"), "{:?}", diags[0]);
+        }
+    }
+}
+
+#[test]
+fn string_sources_reject_imports() {
+    let msg = expect_compile_error("import \"somewhere.ax\"\n\ndef main() -> int:\n    return 0");
+    assert!(msg.contains("requires compiling from files"), "{msg}");
 }

@@ -3,6 +3,17 @@
 Notable changes to the Axon compiler and language. Axon follows semver-ish
 minor bumps while pre-1.0: each minor version is a language milestone.
 
+## [0.8.0] - 2026-09-06
+
+### Added
+- **Import / module system**: `import "../stdlib/stdlib.ax"` — paths resolve
+  relative to the importing file; include-once per canonical path; circular
+  imports rejected with the full cycle chain.
+- **File-aware diagnostics**: every error now names its source file
+  (`[type] stdlib/stdlib.ax:130:20: ...`, also in `--json` output).
+- `axon build / run / ir` are now import-aware — `axon run examples\stdlib_demo.ax`
+  alone pulls in the standard library.
+
 ## [0.7.0] - 2026-09-06
 
 ### Added

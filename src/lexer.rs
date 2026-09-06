@@ -1,4 +1,4 @@
-//! Axon lexer: source text -> tokens with positions.
+﻿//! Axon lexer: source text -> tokens with positions.
 //!
 //! Python-style layout: NEWLINE / INDENT / DEDENT tokens, `#` comments,
 //! blank and comment-only lines produce no tokens, and inside parentheses
@@ -16,6 +16,7 @@ pub enum Tok {
     Def,
     Struct,
     Extern,
+    Import,
     If,
     Elif,
     Else,
@@ -77,7 +78,7 @@ pub enum FStrPart {
     ExprTokens(Vec<Token>),
 }
 
-pub fn lex(src: &str) -> Result<Vec<Token>, Diag> {
+pub fn lex(src: &str, file_id: u32) -> Result<Vec<Token>, Diag> {
     let mut out: Vec<Token> = Vec::new();
     let chars: Vec<char> = src.chars().collect();
     let mut i = 0usize;
@@ -135,7 +136,7 @@ pub fn lex(src: &str) -> Result<Vec<Token>, Diag> {
                     continue;
                 }
                 Some(_) => {
-                    let pos = Pos { line, col: 1 };
+                    let pos = Pos { line, col: 1, file: file_id };
                     let top = *indent_stack.last().unwrap();
                     if indent > top {
                         indent_stack.push(indent);
@@ -147,7 +148,7 @@ pub fn lex(src: &str) -> Result<Vec<Token>, Diag> {
                         }
                         if *indent_stack.last().unwrap() != indent {
                             return Err(Diag {
-                                stage: "lex",
+                                stage: "lex", file: file_id,
                                 line: pos.line,
                                 col: pos.col,
                                 message: format!(
@@ -165,7 +166,7 @@ pub fn lex(src: &str) -> Result<Vec<Token>, Diag> {
 
         let Some(&c) = chars.get(i) else { break };
 
-        let pos = Pos { line, col };
+        let pos = Pos { line, col, file: file_id };
 
         // ---- whitespace / line breaks ----
         if c == ' ' || c == '\t' || c == '\r' {
@@ -197,7 +198,7 @@ pub fn lex(src: &str) -> Result<Vec<Token>, Diag> {
 
             // f-string: `f"` (or `F"`) switches to interpolation scanning
             if (word == "f" || word == "F") && i < chars.len() && chars[i] == '"' {
-                let parts = lex_fstring(&chars, &mut i, &mut line, &mut col, pos)?;
+                let parts = lex_fstring(&chars, &mut i, &mut line, &mut col, pos, file_id)?;
                 out.push(Token { tok: Tok::FStr(parts), pos });
                 continue;
             }
@@ -206,6 +207,7 @@ pub fn lex(src: &str) -> Result<Vec<Token>, Diag> {
                 "def" => Tok::Def,
                 "struct" => Tok::Struct,
                 "extern" => Tok::Extern,
+                "import" => Tok::Import,
                 "if" => Tok::If,
                 "elif" => Tok::Elif,
                 "else" => Tok::Else,
@@ -249,7 +251,7 @@ pub fn lex(src: &str) -> Result<Vec<Token>, Diag> {
             let text: String = chars[start..i].iter().collect();
             if is_float {
                 let v: f64 = text.parse().map_err(|_| Diag {
-                    stage: "lex",
+                    stage: "lex", file: file_id,
                     line: pos.line,
                     col: pos.col,
                     message: format!("invalid float literal '{text}'"),
@@ -257,7 +259,7 @@ pub fn lex(src: &str) -> Result<Vec<Token>, Diag> {
                 out.push(Token { tok: Tok::Float(v), pos });
             } else {
                 let v: i64 = text.parse().map_err(|_| Diag {
-                    stage: "lex",
+                    stage: "lex", file: file_id,
                     line: pos.line,
                     col: pos.col,
                     message: format!("integer literal '{text}' out of range (max 9223372036854775807)"),
@@ -274,7 +276,7 @@ pub fn lex(src: &str) -> Result<Vec<Token>, Diag> {
             loop {
                 if i >= chars.len() {
                     return Err(Diag {
-                        stage: "lex",
+                        stage: "lex", file: file_id,
                         line: pos.line,
                         col: pos.col,
                         message: "unterminated string literal".into(),
@@ -289,7 +291,7 @@ pub fn lex(src: &str) -> Result<Vec<Token>, Diag> {
                     adv!();
                     if i >= chars.len() {
                         return Err(Diag {
-                            stage: "lex",
+                            stage: "lex", file: file_id,
                             line: pos.line,
                             col: pos.col,
                             message: "unterminated string literal".into(),
@@ -303,7 +305,7 @@ pub fn lex(src: &str) -> Result<Vec<Token>, Diag> {
                         '"' => s.push('"'),
                         _ => {
                             return Err(Diag {
-                                stage: "lex",
+                                stage: "lex", file: file_id,
                                 line: pos.line,
                                 col: pos.col,
                                 message: format!("unknown escape sequence '\\{esc}'"),
@@ -340,7 +342,7 @@ pub fn lex(src: &str) -> Result<Vec<Token>, Diag> {
                 paren_depth -= 1;
                 if paren_depth < 0 {
                     return Err(Diag {
-                        stage: "lex",
+                        stage: "lex", file: file_id,
                         line: pos.line,
                         col: pos.col,
                         message: format!("unmatched closing '{c}'"),
@@ -408,7 +410,7 @@ pub fn lex(src: &str) -> Result<Vec<Token>, Diag> {
                     out.push(Token { tok: Tok::AndAnd, pos });
                 } else {
                     return Err(Diag {
-                        stage: "lex",
+                        stage: "lex", file: file_id,
                         line: pos.line,
                         col: pos.col,
                         message: "unexpected character '&' (did you mean '&&' or 'and'?)".into(),
@@ -422,7 +424,7 @@ pub fn lex(src: &str) -> Result<Vec<Token>, Diag> {
                     out.push(Token { tok: Tok::OrOr, pos });
                 } else {
                     return Err(Diag {
-                        stage: "lex",
+                        stage: "lex", file: file_id,
                         line: pos.line,
                         col: pos.col,
                         message: "unexpected character '|' (did you mean '||' or 'or'?)".into(),
@@ -431,7 +433,7 @@ pub fn lex(src: &str) -> Result<Vec<Token>, Diag> {
             }
             _ => {
                 return Err(Diag {
-                    stage: "lex",
+                    stage: "lex", file: file_id,
                     line: pos.line,
                     col: pos.col,
                     message: format!("unexpected character '{c}'"),
@@ -442,15 +444,15 @@ pub fn lex(src: &str) -> Result<Vec<Token>, Diag> {
 
     if paren_depth > 0 {
         return Err(Diag {
-            stage: "lex",
+            stage: "lex", file: file_id,
             line,
             col,
-            message: "unclosed '(' — bracket was never closed".into(),
+            message: "unclosed '(' 鈥?bracket was never closed".into(),
         });
     }
 
     // final NEWLINE, then flush remaining DEDENTs, then EOF
-    let eof_pos = Pos { line, col };
+    let eof_pos = Pos { line, col, file: file_id };
     if !matches!(out.last().map(|t| &t.tok), Some(Tok::Newline)) {
         out.push(Token { tok: Tok::Newline, pos: eof_pos });
     }
@@ -470,6 +472,7 @@ fn lex_fstring(
     line: &mut usize,
     col: &mut usize,
     open_pos: Pos,
+    file_id: u32,
 ) -> Result<Vec<FStrPart>, Diag> {
     let mut parts: Vec<FStrPart> = Vec::new();
     let mut lit = String::new();
@@ -491,7 +494,7 @@ fn lex_fstring(
     loop {
         if *i >= chars.len() {
             return Err(Diag {
-                stage: "lex",
+                stage: "lex", file: file_id,
                 line: open_pos.line,
                 col: open_pos.col,
                 message: "unterminated f-string literal".into(),
@@ -521,7 +524,7 @@ fn lex_fstring(
             loop {
                 if *i >= chars.len() {
                     return Err(Diag {
-                        stage: "lex",
+                        stage: "lex", file: file_id,
                         line: open_pos.line,
                         col: open_pos.col,
                         message: "unterminated '{' in f-string".into(),
@@ -548,7 +551,7 @@ fn lex_fstring(
             let expr_text: String = chars[start..*i].iter().collect();
             if *i >= chars.len() || chars[*i] != '}' {
                 return Err(Diag {
-                    stage: "lex",
+                    stage: "lex", file: file_id,
                     line: open_pos.line,
                     col: open_pos.col,
                     message: "unterminated '{' in f-string".into(),
@@ -557,7 +560,7 @@ fn lex_fstring(
             adv!(); // consume '}'
             if expr_text.trim().is_empty() {
                 return Err(Diag {
-                    stage: "lex",
+                    stage: "lex", file: file_id,
                     line: open_pos.line,
                     col: open_pos.col,
                     message: "empty '{}' in f-string".into(),
@@ -566,7 +569,7 @@ fn lex_fstring(
             // wrap in parens so the sub-lexer's line-start indent tracking is
             // disabled; the '(' also preserves exact original column numbers
             let padded: String = format!("({})", " ".repeat(brace_col - 1) + &expr_text);
-            let toks = lex(&padded)?;
+            let toks = lex(&padded, file_id)?;
             parts.push(FStrPart::ExprTokens(toks));
             continue;
         }
@@ -579,7 +582,7 @@ fn lex_fstring(
                 continue;
             }
             return Err(Diag {
-                stage: "lex",
+                stage: "lex", file: file_id,
                 line: open_pos.line,
                 col: open_pos.col,
                 message: "single '}' in f-string (use '}}' for a literal brace)".into(),
@@ -590,7 +593,7 @@ fn lex_fstring(
             adv!();
             if *i >= chars.len() {
                 return Err(Diag {
-                    stage: "lex",
+                    stage: "lex", file: file_id,
                     line: open_pos.line,
                     col: open_pos.col,
                     message: "unterminated f-string literal".into(),
@@ -604,7 +607,7 @@ fn lex_fstring(
                 '"' => lit.push('"'),
                 _ => {
                     return Err(Diag {
-                        stage: "lex",
+                        stage: "lex", file: file_id,
                         line: open_pos.line,
                         col: open_pos.col,
                         message: format!("unknown escape sequence '\\{esc}' in f-string"),
@@ -624,3 +627,7 @@ fn lex_fstring(
     }
     Ok(parts)
 }
+
+
+
+

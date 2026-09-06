@@ -88,22 +88,7 @@ fn report(diags: &[Diag], json: bool) {
         eprintln!("{}", axon::diags_to_json(diags));
     } else {
         for d in diags {
-            if d.line > 0 {
-                eprintln!("[{}] {}:{}: {}", d.stage, d.line, d.col, d.message);
-            } else {
-                eprintln!("[{}] {}", d.stage, d.message);
-            }
-        }
-    }
-}
-
-fn read_source(path: &str, json: bool) -> Option<String> {
-    match std::fs::read_to_string(path) {
-        Ok(s) => Some(s),
-        Err(e) => {
-            let d = vec![Diag { stage: "io", line: 0, col: 0, message: format!("cannot read '{path}': {e}") }];
-            report(&d, json);
-            None
+            eprintln!("{}", axon::diag_to_string(d));
         }
     }
 }
@@ -114,16 +99,9 @@ fn cmd_build(args: &[String]) {
         eprintln!("error: 'axon build' needs an input file (.ax)");
         std::process::exit(2);
     }
-    // multiple inputs compile as one program (merged namespace)
-    let mut sources = Vec::new();
-    for f in &opts.positional {
-        match read_source(f, opts.json) {
-            Some(s) => sources.push(s),
-            None => std::process::exit(1),
-        }
-    }
+    // the first file is the entry; `import "..."` pulls in the rest
     let exe = opts.out.map(PathBuf::from).unwrap_or_else(|| default_exe(&opts.positional[0]));
-    match axon::build_sources_exe(&sources, &exe, !opts.o0) {
+    match axon::build_paths_exe(&opts.positional, &exe, !opts.o0) {
         Ok(()) => println!("{}", exe.display()),
         Err(diags) => {
             report(&diags, opts.json);
@@ -138,17 +116,10 @@ fn cmd_run(args: &[String]) {
         eprintln!("error: 'axon run' needs an input file (.ax)");
         std::process::exit(2);
     }
-    // all positionals compile as one program; program args come after `--`
-    let mut sources = Vec::new();
-    for f in &opts.positional {
-        match read_source(f, opts.json) {
-            Some(s) => sources.push(s),
-            None => std::process::exit(1),
-        }
-    }
+    // program args: anything after "--"
     let prog_args = &opts.passthrough;
     let exe = temp_exe(&opts.positional[0]);
-    if let Err(diags) = axon::build_sources_exe(&sources, &exe, !opts.o0) {
+    if let Err(diags) = axon::build_paths_exe(&opts.positional, &exe, !opts.o0) {
         report(&diags, opts.json);
         std::process::exit(1);
     }
@@ -169,14 +140,7 @@ fn cmd_ir(args: &[String]) {
         eprintln!("error: 'axon ir' needs an input file (.ax)");
         std::process::exit(2);
     }
-    let mut sources = Vec::new();
-    for f in &opts.positional {
-        match read_source(f, opts.json) {
-            Some(s) => sources.push(s),
-            None => std::process::exit(1),
-        }
-    }
-    match axon::compile_sources_to_ir(&sources, !opts.o0) {
+    match axon::compile_paths_to_ir(&opts.positional, !opts.o0) {
         Ok(ir) => print!("{ir}"),
         Err(diags) => {
             report(&diags, opts.json);

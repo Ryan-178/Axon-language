@@ -51,7 +51,7 @@ impl Parser {
 
     fn unexpected(&self, expected: &Tok) -> Diag {
         Diag {
-            stage: "parse",
+            stage: "parse", file: self.toks[self.idx].pos.file,
             line: self.pos().line,
             col: self.pos().col,
             message: format!("expected {expected:?}, found {:?}", self.peek()),
@@ -67,6 +67,7 @@ impl Parser {
     // ---- top level ----
 
     fn parse_program(&mut self) -> Result<Program, Diag> {
+        let mut imports = Vec::new();
         let mut structs = Vec::new();
         let mut funcs = Vec::new();
         while *self.peek() == Tok::Newline {
@@ -74,6 +75,12 @@ impl Parser {
         }
         while *self.peek() != Tok::Eof {
             match self.peek() {
+                Tok::Import => {
+                    imports.push(self.import_decl()?);
+                    while *self.peek() == Tok::Newline {
+                        self.bump();
+                    }
+                }
                 Tok::Def => {
                     funcs.push(self.fn_decl(false)?);
                     while *self.peek() == Tok::Newline {
@@ -93,14 +100,29 @@ impl Parser {
                     }
                 }
                 _ => return Err(Diag {
-                    stage: "parse",
+                    stage: "parse", file: self.toks[self.idx].pos.file,
                     line: self.pos().line,
                     col: self.pos().col,
-                    message: "expected 'def' or 'struct' at top level".into(),
+                    message: "expected 'import', 'def' or 'struct' at top level".into(),
                 }),
             }
         }
-        Ok(Program { structs, funcs })
+        Ok(Program { imports, structs, funcs })
+    }
+
+    fn import_decl(&mut self) -> Result<ImportDecl, Diag> {
+        let pos = self.pos();
+        self.eat(&Tok::Import)?;
+        let path = match self.bump() {
+            Tok::Str(s) => s,
+            _ => return Err(Diag {
+                stage: "parse", file: self.toks[self.idx].pos.file,
+                line: self.pos().line,
+                col: self.pos().col,
+                message: "expected a string path after 'import'".into(),
+            }),
+        };
+        Ok(ImportDecl { path, pos })
     }
 
     fn struct_decl(&mut self) -> Result<StructDecl, Diag> {
@@ -118,7 +140,7 @@ impl Parser {
         while *self.peek() != Tok::Dedent {
             if *self.peek() == Tok::Eof {
                 return Err(Diag {
-                    stage: "parse",
+                    stage: "parse", file: self.toks[self.idx].pos.file,
                     line: self.pos().line,
                     col: self.pos().col,
                     message: "unexpected end of file inside struct body".into(),
@@ -213,7 +235,7 @@ impl Parser {
             let n = self.cur_len_params[1].clone();
             self.cur_len_params = Vec::new();
             return Err(Diag {
-                stage: "parse",
+                stage: "parse", file: self.toks[self.idx].pos.file,
                 line: pos.line,
                 col: pos.col,
                 message: format!("only one length parameter is supported (found '{n}' as well)"),
@@ -238,7 +260,7 @@ impl Parser {
                     Tok::Int(n) if n > 0 => n as usize,
                     Tok::Int(_) => {
                         return Err(Diag {
-                            stage: "parse",
+                            stage: "parse", file: self.toks[self.idx].pos.file,
                             line: self.pos().line,
                             col: self.pos().col,
                             message: "array length must be a positive integer".into(),
@@ -253,7 +275,7 @@ impl Parser {
                     }
                     Tok::Ident(n) => {
                         return Err(Diag {
-                            stage: "parse",
+                            stage: "parse", file: self.toks[self.idx].pos.file,
                             line: self.pos().line,
                             col: self.pos().col,
                             message: format!(
@@ -268,7 +290,7 @@ impl Parser {
             }
             _ => {
                 return Err(Diag {
-                    stage: "parse",
+                    stage: "parse", file: self.toks[self.idx].pos.file,
                     line: self.pos().line,
                     col: self.pos().col,
                     message: "expected a type: int | float | bool | string | void | name | [T; N]".into(),
@@ -290,7 +312,7 @@ impl Parser {
             while *self.peek() != Tok::Dedent {
                 if *self.peek() == Tok::Eof {
                     return Err(Diag {
-                        stage: "parse",
+                        stage: "parse", file: self.toks[self.idx].pos.file,
                         line: self.pos().line,
                         col: self.pos().col,
                         message: "unexpected end of file inside an indented block".into(),
@@ -384,7 +406,7 @@ impl Parser {
                 if *self.peek() == Tok::Assign {
                     if !expr.is_lvalue() {
                         return Err(Diag {
-                            stage: "parse",
+                            stage: "parse", file: self.toks[self.idx].pos.file,
                             line: pos.line,
                             col: pos.col,
                             message: "invalid assignment target".into(),
@@ -408,7 +430,7 @@ impl Parser {
     fn simple_stmt(&mut self) -> Result<Stmt, Diag> {
         match self.peek() {
             Tok::If | Tok::While | Tok::For | Tok::Def | Tok::Struct => Err(Diag {
-                stage: "parse",
+                stage: "parse", file: self.toks[self.idx].pos.file,
                 line: self.pos().line,
                 col: self.pos().col,
                 message: "compound statements cannot appear on the same line after ':'".into(),
@@ -622,7 +644,7 @@ impl Parser {
                         other => {
                             let p = other.pos();
                             return Err(Diag {
-                                stage: "parse",
+                                stage: "parse", file: self.toks[self.idx].pos.file,
                                 line: p.line,
                                 col: p.col,
                                 message: "only named functions can be called".into(),
@@ -725,7 +747,7 @@ impl Parser {
                 self.eat(&Tok::RBracket)?;
                 if elems.is_empty() {
                     return Err(Diag {
-                        stage: "parse",
+                        stage: "parse", file: self.toks[self.idx].pos.file,
                         line: pos.line,
                         col: pos.col,
                         message: "empty array literals are not allowed (element type could not be inferred)".into(),
@@ -735,7 +757,7 @@ impl Parser {
                 Ok(Expr::ArrayLit { elems, lit_id, pos })
             }
             _ => Err(Diag {
-                stage: "parse",
+                stage: "parse", file: self.toks[self.idx].pos.file,
                 line: pos.line,
                 col: pos.col,
                 message: format!("expected an expression, found {:?}", self.toks[self.idx.saturating_sub(1)].tok),
@@ -743,5 +765,6 @@ impl Parser {
         }
     }
 }
+
 
 

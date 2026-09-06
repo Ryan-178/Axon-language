@@ -1,5 +1,7 @@
-# Standard library demo — compile with: axon run examples/stdlib_demo.ax stdlib/stdlib.ax
-# Generic functions work for any element type and array length.
+# Standard library demo - the import resolves relative to this file:
+#   axon run examples\stdlib_demo.ax
+import "../stdlib/stdlib.ax"
+
 def main() -> int:
     # math
     print(isqrt(99))
@@ -11,7 +13,7 @@ def main() -> int:
     # generic sort / search over ints
     arr = [5, 3, 8, 1, 9, 2, 7, 4]
     sorted_arr = sort(arr)
-    print(arr[0])                             # 5 — input untouched (value semantics)
+    print(arr[0])                             # 5 - input untouched (value semantics)
     print(binary_search(sorted_arr, 8))       # index of 8 in the sorted copy
 
     # the same functions instantiate for other types and lengths
@@ -25,6 +27,6 @@ def main() -> int:
     print(min_of(["pear", "apple", "fig"]))
     print(reverse([1, 2, 3])[0])
 
-    # f-strings compose with library results
+    # f-strings compose with library results too
     print(f"sqrt(2) ~= {sqrt(2.0)}")
     return 0

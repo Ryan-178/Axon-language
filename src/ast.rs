@@ -41,12 +41,21 @@ impl Type {
 pub struct Pos {
     pub line: usize,
     pub col: usize,
+    /// index into the compilation's file registry (u32::MAX = synthetic)
+    pub file: u32,
 }
 
 #[derive(Debug)]
 pub struct Program {
+    pub imports: Vec<ImportDecl>,
     pub structs: Vec<StructDecl>,
     pub funcs: Vec<FnDecl>,
+}
+
+#[derive(Debug)]
+pub struct ImportDecl {
+    pub path: String,
+    pub pos: Pos,
 }
 
 /// sentinel array length inside a generic declaration: `[T; N]` parses to
