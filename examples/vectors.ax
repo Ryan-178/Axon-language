@@ -1,0 +1,26 @@
+# Arrays + structs demo: 2D vectors, matrix multiply-add pattern.
+struct Vec2:
+    x: int
+    y: int
+
+def add(a: Vec2, b: Vec2) -> Vec2:
+    return Vec2(x=a.x + b.x, y=a.y + b.y)
+
+def length_squared(v: Vec2) -> int:
+    return v.x * v.x + v.y * v.y
+
+def main() -> int:
+    # array of structs
+    path: [Vec2; 3] = [Vec2(x=1, y=2), Vec2(x=3, y=4), Vec2(x=5, y=6)]
+
+    # walk the path, accumulating
+    total = Vec2(x=0, y=0)
+    i = 0
+    while i < len(path):
+        total = add(total, path[i])
+        i = i + 1
+
+    print(total.x)
+    print(total.y)
+    print(length_squared(total))
+    return 0

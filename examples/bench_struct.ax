@@ -1,0 +1,24 @@
+# Struct benchmark: 25000 4-field particles, 3000 passes.
+# Each visit copies the struct (value semantics) and passes it by value.
+struct Particle:
+    x: float
+    y: float
+    z: float
+    mass: float
+
+def energy(p: Particle) -> float:
+    return (p.x * p.x + p.y * p.y + p.z * p.z) * p.mass
+
+def main() -> int:
+    ps: [Particle; 25000] = [Particle(x=1.5, y=0.75, z=0.25, mass=2.0)] * 25000
+    total = 0.0
+    n = 0
+    while n < 3000:
+        i = 0
+        while i < 25000:
+            p = ps[i]
+            total = total + energy(p)
+            i = i + 1
+        n = n + 1
+    print(total)
+    return 0

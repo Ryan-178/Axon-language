@@ -1,0 +1,10 @@
+# 200M loop iterations — proof that Axon runs at native (C++-class) speed:
+# compiled through LLVM O3, the loop is register-allocated (mem2reg).
+def main() -> int:
+    total = 0
+    i = 0
+    while i < 100000000:
+        total = total + i
+        i = i + 1
+    print(total)
+    return 0

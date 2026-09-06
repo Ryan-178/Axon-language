@@ -1,0 +1,37 @@
+# Strings demo: concatenation, comparison, len, strings in structs/arrays.
+struct Profile:
+    user: string
+    level: int
+
+def title(p: Profile) -> string:
+    return "Profile[" + p.user + "]"
+
+def main() -> int:
+    # concatenation
+    greeting = "hello" + ", " + "axon"
+    print(greeting)
+    print(len(greeting))
+
+    # comparison (byte-wise)
+    print("apple" < "banana")
+    print("abc" == "abc")
+    print("abc" != "abd")
+
+    # strings in structs
+    p = Profile(user="li lei", level=3)
+    print(p.user)
+    print(title(p))
+
+    # strings in arrays
+    names: [string; 3] = ["al", "bo", "cy"]
+    print(names[0] + "/" + names[1] + "/" + names[2])
+    print(names[0] < names[2])
+
+    # building a string in a loop
+    acc = ""
+    i = 0
+    while i < 4:
+        acc = acc + "*"
+        i = i + 1
+    print(acc)
+    return 0

@@ -1,0 +1,17 @@
+# Array benchmark: fill 50000 ints, then 4000 passes over the array (2e8 reads).
+def main() -> int:
+    data: [int; 50000] = [0] * 50000
+    i = 0
+    while i < 50000:
+        data[i] = i % 1000
+        i = i + 1
+    total = 0
+    n = 0
+    while n < 4000:
+        i = 0
+        while i < 50000:
+            total = total + data[i]
+            i = i + 1
+        n = n + 1
+    print(total)
+    return 0

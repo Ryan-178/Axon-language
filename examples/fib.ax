@@ -1,0 +1,12 @@
+# Recursive Fibonacci: prints fib(0..20)
+def fib(n: int) -> int:
+    if n < 2:
+        return n
+    return fib(n - 1) + fib(n - 2)
+
+def main() -> int:
+    i = 0
+    while i <= 20:
+        print(fib(i))
+        i = i + 1
+    return 0

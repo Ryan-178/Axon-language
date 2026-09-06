@@ -1,0 +1,4 @@
+# the classic
+def main() -> int:
+    print("hello, axon")
+    return 0
