@@ -8,6 +8,17 @@ use axon::build_exe;
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
+/// the in-Axon standard library (compiled together with stdlib tests)
+fn stdlib_src() -> String {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("stdlib").join("stdlib.ax");
+    std::fs::read_to_string(path).expect("stdlib/stdlib.ax not found")
+}
+
+fn build_and_run_with_stdlib(src: &str) -> String {
+    let full = format!("{}\n{}", stdlib_src(), dedent(src));
+    build_and_run(&full)
+}
+
 /// Strip the common leading indentation (and leading blank lines) from an
 /// embedded source string, so tests can stay indented inside Rust code.
 fn dedent(src: &str) -> String {
@@ -985,4 +996,67 @@ fn rejects_fstring_of_array() {
         "def main() -> int:\n    print(f\"{[1, 2]}\")\n    return 0",
     );
     assert!(msg.contains("cannot convert [int; 2] to string"), "{msg}");
+}
+
+// ---- standard library (written in Axon itself, v0.6) ----
+
+#[test]
+fn stdlib_math() {
+    let out = build_and_run_with_stdlib(
+        r#"
+        def main() -> int:
+            print(sqrt(4.0))
+            print(sqrt(2.0))
+            print(isqrt(99))
+            print(isqrt(100))
+            print(pow_i(3, 4))
+            print(pow_i(2, 10))
+            print(gcd(48, 18))
+            print(gcd(-48, 18))
+            print(lcm(4, 6))
+            print(lcm(0, 5))
+            print(is_prime(97))
+            print(is_prime(98))
+            print(is_prime(2))
+            print(abs_i(-5))
+            print(hypot(3.0, 4.0))
+            print(clamp_i(15, 0, 10))
+            print(clamp_f(0.5, 1.0, 2.0))
+            return 0
+        "#,
+    );
+    assert_eq!(
+        out,
+        "2.000000\n1.414214\n9\n10\n81\n1024\n6\n6\n12\n0\ntrue\nfalse\ntrue\n5\n5.000000\n10\n1.000000\n"
+    );
+}
+
+#[test]
+fn stdlib_search_and_sort() {
+    let out = build_and_run_with_stdlib(
+        r#"
+        def main() -> int:
+            arr = [5, 3, 8, 1, 9, 2, 7, 4]
+            sorted_arr = bubble_sort_8(arr)
+            print(arr[0])                    # input untouched: value semantics
+            print(sum_8(sorted_arr))
+            print(max_8(arr))
+            print(min_8(arr))
+            print(linear_search_8(arr, 8))
+            print(linear_search_8(arr, 42))
+            print(binary_search_8(sorted_arr, 8))
+            print(binary_search_8(sorted_arr, 6))
+            print(reverse_8(arr)[0])
+            return 0
+        "#,
+    );
+    assert_eq!(out, "5\n39\n9\n1\n2\n-1\n6\n-1\n4\n");
+}
+
+#[test]
+fn rejects_extern_main() {
+    let msg = expect_compile_error(
+        "extern def main() -> int",
+    );
+    assert!(msg.contains("'main' cannot be declared extern"), "{msg}");
 }

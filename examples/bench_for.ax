@@ -1,0 +1,11 @@
+# for-loop benchmark: fill + iterate 1e8 elements through the hidden-index loop.
+def main() -> int:
+    data: [int; 50000] = [0] * 50000
+    for i in range(50000):
+        data[i] = i % 1000
+    total = 0
+    for n in range(2000):
+        for x in data:
+            total = total + x
+    print(total)
+    return 0

@@ -2,7 +2,7 @@
 
 Axon: AI-native compiled language with Python-style syntax (indentation
 blocks, `def`, `elif`, `#` comments) compiled through LLVM 18 to native code —
-measured at parity with `clang -O3`. This repo IS the compiler (v0.5, written
+measured at parity with `clang -O3`. This repo IS the compiler (v0.6, written
 in Rust). Language sources use the `.ax` extension. Language rules live in
 `docs/spec.md` — keep it in sync with `src/parser.rs` + `src/typecheck.rs`
 when the grammar changes.
@@ -11,8 +11,9 @@ when the grammar changes.
 
 ```powershell
 cargo build                                   # build the `axon` compiler
-cargo test                                    # 62 integration tests (compile .ax -> exe -> run)
+cargo test                                    # 65 integration tests (compile .ax -> exe -> run)
 cargo run -- run examples\hello.ax            # compile+run an Axon program
+cargo run -- run examples\stdlib_demo.ax stdlib\stdlib.ax   # multi-file: merged namespace
 cargo run -- build examples\fib.ax -o f.exe   # emit a native executable (LLVM O3 default)
 cargo run -- ir examples\fib.ax               # dump optimized LLVM IR
 cargo run -- run bad.ax --json                # diagnostics as JSON for agent consumption
@@ -67,6 +68,10 @@ src/main.rs           CLI (build / run / ir), --json diagnostics
   surface as `internal` diags, never panics, except LLVM's own fatal errors.
 - Zero external crate dependencies. Any new LLVM feature = add `extern "C"`
   to `src/llvm.rs` + verify the symbol exists in LLVM-C.lib first.
+- Multi-file: `parse_sources` merges all inputs into one Program (shared
+  namespace, duplicate detection applies). `extern def` = bodyless C FFI
+  declaration — no entry block, no body emission; declaring `extern main`
+  is a type error.
 
 ## Lexer invariants (Python-style layout)
 
@@ -146,5 +151,6 @@ src/main.rs           CLI (build / run / ir), --json diagnostics
 
 ## Repo layout
 
-- `examples/*.ax` — demo programs (hello, fib, primes, benchmark, vectors, strings)
+- `examples/*.ax` — demo programs (hello, fib, primes, vectors, strings, benchmarks, stdlib_demo)
+- `stdlib/stdlib.ax` — the standard library, written in Axon itself
 - `docs/spec.md` — language spec + roadmap (self-hosting, in-Axon stdlib)

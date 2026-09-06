@@ -1,4 +1,4 @@
-# Axon Language Specification (v0.5)
+# Axon Language Specification (v0.6)
 
 Axon is an AI-native, statically typed, ahead-of-time compiled language with a
 Python-style syntax. Design goals: minimal syntax, explicit semantics, native
@@ -137,13 +137,22 @@ data: [int; 50000] = [0] * 50000    # Python-style replication
 
 ## Program structure
 
-A program is a list of `struct` and `def` definitions; execution starts at `main`.
+A program is a list of `struct`, `def`, and `extern def` declarations;
+execution starts at `main`.
 
 ```axon
+extern def sqrt(x: float) -> float    # C runtime function (FFI), no body
+
 def main() -> int:
-    print("hello, axon")
-    return 0              # exit code (truncated to i32 by the C entry wrapper)
+    print(sqrt(2.0))                  # 1.414214
+    return 0
 ```
+
+- `extern def` declares a C-runtime function: no body, resolved at link time
+  from the default libraries. Extern functions cannot be named `main` and
+  cannot use `string` params/returns yet (raw `ptr` semantics pending).
+- Multiple source files compile as **one merged namespace**:
+  `axon build main.ax stdlib/stdlib.ax` — declarations may live in any file.
 
 `main` returns `int` (process exit code) or `void` (exit 0).
 
@@ -226,8 +235,19 @@ Diagnostics stages: `lex`, `parse`, `type`, `internal`, `link`, `io`.
 
 ## Performance
 
-Axon compiles through LLVM O3 to native machine code — measured equal to
-`clang -O3` on the same program (see `examples/benchmark.ax`).
+Axon compiles through LLVM O3 to native machine code — measured at parity
+with `clang -O3` on identical algorithms (see `examples/bench_*.ax`):
+loop sum, array scan, struct copies, for-loop iteration, and string
+build/compare all land within ±15% of clang.
+
+## Standard library
+
+`stdlib/stdlib.ax` is written **in Axon itself** and compiled together with
+the program: math (`abs/min/max/clamp/pow/gcd/lcm/isqrt/is_prime/hypot`
++ `sqrt`/`floor`/`ceil` via FFI), search (`linear_search_8`,
+`binary_search_8`), sort (`bubble_sort_8`), and array helpers (`sum_8`,
+`max_8`, `min_8`, `reverse_8`). The `_8` suffix marks the fixed array size —
+generics are on the roadmap.
 
 ## Roadmap
 

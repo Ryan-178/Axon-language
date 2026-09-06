@@ -264,7 +264,8 @@ impl Gen {
             let internal = if f.name == "main" { "axon.main" } else { f.name.as_str() };
             let name = self.cstr(internal);
             let ref_ = LLVMAddFunction(self.module, name.as_ptr(), fn_ty);
-            let entry = self.add_bb(ref_, "entry");
+            // extern declarations get no entry block (no body will be emitted)
+            let entry = if f.is_extern { std::ptr::null_mut() } else { self.add_bb(ref_, "entry") };
             self.fns.insert(
                 f.name.clone(),
                 FnInfo { ref_, fn_ty, ret: f.ret.clone(), entry_bb: entry },
@@ -273,6 +274,9 @@ impl Gen {
 
         // emit bodies
         for f in &program.funcs {
+            if f.is_extern {
+                continue; // body lives in the C runtime; declaration is enough
+            }
             let (fn_ref, entry_bb, fn_ret) = {
                 let info = &self.fns[&f.name];
                 (info.ref_, info.entry_bb, info.ret.clone())

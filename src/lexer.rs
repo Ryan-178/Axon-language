@@ -15,6 +15,7 @@ pub enum Tok {
     Str(String),
     Def,
     Struct,
+    Extern,
     If,
     Elif,
     Else,
@@ -204,6 +205,7 @@ pub fn lex(src: &str) -> Result<Vec<Token>, Diag> {
             let tok = match word.as_str() {
                 "def" => Tok::Def,
                 "struct" => Tok::Struct,
+                "extern" => Tok::Extern,
                 "if" => Tok::If,
                 "elif" => Tok::Elif,
                 "else" => Tok::Else,

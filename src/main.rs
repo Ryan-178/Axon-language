@@ -110,13 +110,20 @@ fn read_source(path: &str, json: bool) -> Option<String> {
 
 fn cmd_build(args: &[String]) {
     let opts = parse_opts(args);
-    let Some(input) = opts.positional.first() else {
+    if opts.positional.is_empty() {
         eprintln!("error: 'axon build' needs an input file (.ax)");
         std::process::exit(2);
-    };
-    let Some(src) = read_source(input, opts.json) else { std::process::exit(1) };
-    let exe = opts.out.map(PathBuf::from).unwrap_or_else(|| default_exe(input));
-    match axon::build_exe(&src, &exe, !opts.o0) {
+    }
+    // multiple inputs compile as one program (merged namespace)
+    let mut sources = Vec::new();
+    for f in &opts.positional {
+        match read_source(f, opts.json) {
+            Some(s) => sources.push(s),
+            None => std::process::exit(1),
+        }
+    }
+    let exe = opts.out.map(PathBuf::from).unwrap_or_else(|| default_exe(&opts.positional[0]));
+    match axon::build_sources_exe(&sources, &exe, !opts.o0) {
         Ok(()) => println!("{}", exe.display()),
         Err(diags) => {
             report(&diags, opts.json);
@@ -127,19 +134,21 @@ fn cmd_build(args: &[String]) {
 
 fn cmd_run(args: &[String]) {
     let opts = parse_opts(args);
-    let Some(input) = opts.positional.first() else {
+    if opts.positional.is_empty() {
         eprintln!("error: 'axon run' needs an input file (.ax)");
         std::process::exit(2);
-    };
-    // program args: anything after "--", or extra positionals after the input file
-    let prog_args: Vec<String> = if !opts.passthrough.is_empty() || args.contains(&"--".to_string()) {
-        opts.passthrough.clone()
-    } else {
-        opts.positional[1..].to_vec()
-    };
-    let Some(src) = read_source(input, opts.json) else { std::process::exit(1) };
-    let exe = temp_exe(input);
-    if let Err(diags) = axon::build_exe(&src, &exe, !opts.o0) {
+    }
+    // all positionals compile as one program; program args come after `--`
+    let mut sources = Vec::new();
+    for f in &opts.positional {
+        match read_source(f, opts.json) {
+            Some(s) => sources.push(s),
+            None => std::process::exit(1),
+        }
+    }
+    let prog_args = &opts.passthrough;
+    let exe = temp_exe(&opts.positional[0]);
+    if let Err(diags) = axon::build_sources_exe(&sources, &exe, !opts.o0) {
         report(&diags, opts.json);
         std::process::exit(1);
     }
@@ -156,12 +165,18 @@ fn cmd_run(args: &[String]) {
 
 fn cmd_ir(args: &[String]) {
     let opts = parse_opts(args);
-    let Some(input) = opts.positional.first() else {
+    if opts.positional.is_empty() {
         eprintln!("error: 'axon ir' needs an input file (.ax)");
         std::process::exit(2);
-    };
-    let Some(src) = read_source(input, opts.json) else { std::process::exit(1) };
-    match axon::compile_to_ir(&src, !opts.o0) {
+    }
+    let mut sources = Vec::new();
+    for f in &opts.positional {
+        match read_source(f, opts.json) {
+            Some(s) => sources.push(s),
+            None => std::process::exit(1),
+        }
+    }
+    match axon::compile_sources_to_ir(&sources, !opts.o0) {
         Ok(ir) => print!("{ir}"),
         Err(diags) => {
             report(&diags, opts.json);

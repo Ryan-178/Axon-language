@@ -1,0 +1,170 @@
+# Axon standard library (stdlib) — written in Axon itself.
+# Scope v0.1: scalar math, searching, sorting on fixed-size [int; 8].
+# Generic array sizes / references: see roadmap in docs/spec.md.
+
+# ---- C runtime math (FFI) ----
+extern def sqrt(x: float) -> float
+extern def floor(x: float) -> float
+extern def ceil(x: float) -> float
+
+# ---- integer math ----
+
+def abs_i(n: int) -> int:
+    if n < 0:
+        return -n
+    return n
+
+def min_i(a: int, b: int) -> int:
+    if a < b:
+        return a
+    return b
+
+def max_i(a: int, b: int) -> int:
+    if a > b:
+        return a
+    return b
+
+def clamp_i(v: int, lo: int, hi: int) -> int:
+    return min_i(max_i(v, lo), hi)
+
+# fast integer power: base^exp for exp >= 0 (overflow wraps like C)
+def pow_i(base: int, exp: int) -> int:
+    result = 1
+    b = base
+    e = exp
+    while e > 0:
+        if e % 2 == 1:
+            result = result * b
+        b = b * b
+        e = e / 2
+    return result
+
+def gcd(a: int, b: int) -> int:
+    a = abs_i(a)
+    b = abs_i(b)
+    while b > 0:
+        t = a % b
+        a = b
+        b = t
+    return a
+
+def lcm(a: int, b: int) -> int:
+    if a == 0 or b == 0:
+        return 0
+    return a / gcd(a, b) * b
+
+# integer square root (Newton's method, floors toward zero)
+def isqrt(n: int) -> int:
+    if n < 2:
+        return n
+    x = n
+    y = (x + 1) / 2
+    while y < x:
+        x = y
+        y = (x + n / x) / 2
+    return x
+
+# ---- float math ----
+
+def abs_f(x: float) -> float:
+    if x < 0.0:
+        return -x
+    return x
+
+def min_f(a: float, b: float) -> float:
+    if a < b:
+        return a
+    return b
+
+def max_f(a: float, b: float) -> float:
+    if a > b:
+        return a
+    return b
+
+def clamp_f(v: float, lo: float, hi: float) -> float:
+    return min_f(max_f(v, lo), hi)
+
+def hypot(a: float, b: float) -> float:
+    return sqrt(a * a + b * b)
+
+# ---- primality ----
+
+def is_prime(n: int) -> bool:
+    if n < 2:
+        return False
+    d = 2
+    while d * d <= n:
+        if n % d == 0:
+            return False
+        d = d + 1
+    return True
+
+# ---- search on [int; 8] ----
+# returns the index of the first match, or -1 when absent
+
+def linear_search_8(arr: [int; 8], target: int) -> int:
+    for i in range(8):
+        if arr[i] == target:
+            return i
+    return -1
+
+# binary search: arr must be sorted ascending
+def binary_search_8(arr: [int; 8], target: int) -> int:
+    lo = 0
+    hi = 7
+    while lo <= hi:
+        mid = (lo + hi) / 2
+        if arr[mid] == target:
+            return mid
+        elif arr[mid] < target:
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    return -1
+
+# ---- sort on [int; 8] ----
+# value semantics: returns a sorted copy, the input is untouched
+
+def bubble_sort_8(arr: [int; 8]) -> [int; 8]:
+    result = arr
+    for i in range(8):
+        for j in range(7 - i):
+            if result[j] > result[j + 1]:
+                t = result[j]
+                result[j] = result[j + 1]
+                result[j + 1] = t
+    return result
+
+# sum / max / min over [int; 8]
+
+def sum_8(arr: [int; 8]) -> int:
+    total = 0
+    for x in arr:
+        total = total + x
+    return total
+
+def max_8(arr: [int; 8]) -> int:
+    m = arr[0]
+    for x in arr:
+        m = max_i(m, x)
+    return m
+
+def min_8(arr: [int; 8]) -> int:
+    m = arr[0]
+    for x in arr:
+        m = min_i(m, x)
+    return m
+
+# reverse a copy of [int; 8]
+
+def reverse_8(arr: [int; 8]) -> [int; 8]:
+    result = arr
+    i = 0
+    j = 7
+    while i < j:
+        t = result[i]
+        result[i] = result[j]
+        result[j] = t
+        i = i + 1
+        j = j - 1
+    return result

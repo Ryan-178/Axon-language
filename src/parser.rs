@@ -71,7 +71,13 @@ impl Parser {
         while *self.peek() != Tok::Eof {
             match self.peek() {
                 Tok::Def => {
-                    funcs.push(self.fn_decl()?);
+                    funcs.push(self.fn_decl(false)?);
+                    while *self.peek() == Tok::Newline {
+                        self.bump();
+                    }
+                }
+                Tok::Extern => {
+                    funcs.push(self.fn_decl(true)?);
                     while *self.peek() == Tok::Newline {
                         self.bump();
                     }
@@ -130,8 +136,11 @@ impl Parser {
         Ok(StructDecl { name, fields, pos })
     }
 
-    fn fn_decl(&mut self) -> Result<FnDecl, Diag> {
+    fn fn_decl(&mut self, is_extern: bool) -> Result<FnDecl, Diag> {
         let pos = self.pos();
+        if is_extern {
+            self.eat(&Tok::Extern)?;
+        }
         self.eat(&Tok::Def)?;
         let name = match self.bump() {
             Tok::Ident(n) => n,
@@ -168,8 +177,13 @@ impl Parser {
         } else {
             Type::Void
         };
-        let body = self.block()?;
-        Ok(FnDecl { name, params, ret, body, pos })
+        let body = if is_extern {
+            // extern declarations have no body; the statement ends at the newline
+            Block { stmts: vec![] }
+        } else {
+            self.block()?
+        };
+        Ok(FnDecl { name, params, ret, body, is_extern, pos })
     }
 
     fn ty(&mut self) -> Result<Type, Diag> {

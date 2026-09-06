@@ -85,6 +85,17 @@ pub fn check(program: &Program) -> Result<(StructTable, HashMap<String, FnSig>),
     }
 
     for f in &program.funcs {
+        if f.is_extern {
+            if f.name == "main" {
+                return Err(Diag {
+                    stage: "type",
+                    line: f.pos.line,
+                    col: f.pos.col,
+                    message: "'main' cannot be declared extern".into(),
+                });
+            }
+            continue;
+        }
         let mut scopes: Vec<(String, Type)> =
             f.params.iter().map(|p| (p.name.clone(), p.ty.clone())).collect();
         let returns_all = check_block(&f.body, f, &sigs, &structs, &mut scopes, 0)?;

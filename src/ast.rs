@@ -61,6 +61,8 @@ pub struct FnDecl {
     pub params: Vec<Param>,
     pub ret: Type,
     pub body: Block,
+    /// `extern def`: declared, body provided by the C runtime
+    pub is_extern: bool,
     pub pos: Pos,
 }
 

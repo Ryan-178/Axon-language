@@ -1,0 +1,15 @@
+# string benchmark: 10k concatenations building a 100KB string,
+# then 2e6 byte-wise strcmp comparisons of 64-byte strings.
+def main() -> int:
+    s = ""
+    piece = "abcdefghij"
+    for i in range(10000):
+        s = s + piece
+    print(len(s))
+    a = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    hits = 0
+    for i in range(2000000):
+        if a == a:
+            hits = hits + 1
+    print(hits)
+    return 0
