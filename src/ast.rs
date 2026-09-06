@@ -36,7 +36,7 @@ impl Type {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Pos {
     pub line: usize,
     pub col: usize,
@@ -77,6 +77,14 @@ pub struct Block {
 }
 
 #[derive(Debug, Clone)]
+pub enum ForIter {
+    /// `range(start, end, step)` — 1..3 int args
+    Range(Vec<Expr>),
+    /// iterate array elements (each copied into the loop variable)
+    Array(Expr),
+}
+
+#[derive(Debug, Clone)]
 pub enum Stmt {
     /// `x = e` (inferred) or `x: t = e` (annotated). First use declares the
     /// variable; subsequent uses are re-assignments with the same type.
@@ -101,6 +109,18 @@ pub enum Stmt {
     While {
         cond: Expr,
         body: Block,
+        pos: Pos,
+    },
+    For {
+        var: String,
+        iter: ForIter,
+        body: Block,
+        pos: Pos,
+    },
+    Break {
+        pos: Pos,
+    },
+    Continue {
         pos: Pos,
     },
     Return {

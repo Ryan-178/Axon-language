@@ -76,6 +76,7 @@ extern "C" {
     pub fn LLVMBuildFMul(b: LLVMBuilderRef, l: LLVMValueRef, r: LLVMValueRef, name: *const c_char) -> LLVMValueRef;
     pub fn LLVMBuildFDiv(b: LLVMBuilderRef, l: LLVMValueRef, r: LLVMValueRef, name: *const c_char) -> LLVMValueRef;
     pub fn LLVMBuildICmp(b: LLVMBuilderRef, pred: c_uint, l: LLVMValueRef, r: LLVMValueRef, name: *const c_char) -> LLVMValueRef;
+    pub fn LLVMBuildSelect(b: LLVMBuilderRef, cond: LLVMValueRef, if_true: LLVMValueRef, if_false: LLVMValueRef, name: *const c_char) -> LLVMValueRef;
     pub fn LLVMBuildFCmp(b: LLVMBuilderRef, pred: c_uint, l: LLVMValueRef, r: LLVMValueRef, name: *const c_char) -> LLVMValueRef;
     pub fn LLVMBuildNot(b: LLVMBuilderRef, v: LLVMValueRef, name: *const c_char) -> LLVMValueRef;
     pub fn LLVMBuildFNeg(b: LLVMBuilderRef, v: LLVMValueRef, name: *const c_char) -> LLVMValueRef;

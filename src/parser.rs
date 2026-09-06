@@ -1,7 +1,7 @@
 //! Axon parser: tokens -> AST (recursive descent, Python-style layout).
 
 use crate::ast::*;
-use crate::lexer::{Tok, Token};
+use crate::lexer::{FStrPart, Tok, Token};
 use crate::Diag;
 
 pub fn parse(tokens: Vec<Token>) -> Result<Program, Diag> {
@@ -253,6 +253,38 @@ impl Parser {
                 let body = self.block()?;
                 Ok(Stmt::While { cond, body, pos })
             }
+            Tok::For => {
+                self.bump();
+                let var = match self.bump() {
+                    Tok::Ident(n) => n,
+                    _ => return Err(self.unexpected(&Tok::Ident("loop variable".into()))),
+                };
+                self.eat(&Tok::In)?;
+                // `range(...)` is contextual: an identifier followed by '('
+                let iter = if matches!(self.peek(), Tok::Ident(n) if n == "range")
+                    && *self.peek2() == Tok::LParen
+                {
+                    self.bump(); // 'range'
+                    self.bump(); // '('
+                    let args = self.call_args()?;
+                    self.eat(&Tok::RParen)?;
+                    let vals: Vec<Expr> = args.into_iter().map(|a| a.value).collect();
+                    ForIter::Range(vals)
+                } else {
+                    let e = self.expr()?;
+                    ForIter::Array(e)
+                };
+                let body = self.block()?;
+                Ok(Stmt::For { var, iter, body, pos })
+            }
+            Tok::Break => {
+                self.bump();
+                Ok(Stmt::Break { pos })
+            }
+            Tok::Continue => {
+                self.bump();
+                Ok(Stmt::Continue { pos })
+            }
             Tok::Return => {
                 self.bump();
                 if *self.peek() == Tok::Newline {
@@ -307,7 +339,7 @@ impl Parser {
     /// simple statements allowed after `:` on the same line
     fn simple_stmt(&mut self) -> Result<Stmt, Diag> {
         match self.peek() {
-            Tok::If | Tok::While | Tok::Def | Tok::Struct => Err(Diag {
+            Tok::If | Tok::While | Tok::For | Tok::Def | Tok::Struct => Err(Diag {
                 stage: "parse",
                 line: self.pos().line,
                 col: self.pos().col,
@@ -352,6 +384,35 @@ impl Parser {
         }
         let (cond, then_block) = branches.swap_remove(0);
         Ok(Stmt::If { cond, then_block, else_block: else_cur, pos })
+    }
+
+    /// f"pre{expr}post" → "pre" + str(expr) + "post"
+    fn desugar_fstring(&mut self, parts: Vec<FStrPart>, pos: Pos) -> Result<Expr, Diag> {
+        let mut exprs: Vec<Expr> = Vec::new();
+        for p in parts {
+            match p {
+                FStrPart::Lit(s) => {
+                    if !s.is_empty() {
+                        exprs.push(Expr::Str(s, pos));
+                    }
+                }
+                FStrPart::ExprTokens(toks) => {
+                    let mut sub = Parser { toks, idx: 0, next_lit_id: self.next_lit_id };
+                    let value = sub.expr()?;
+                    self.next_lit_id = sub.next_lit_id;
+                    let lit_id = self.lit_id();
+                    exprs.push(Expr::Call { name: "str".into(), args: vec![Arg { name: None, value }], pos, lit_id });
+                }
+            }
+        }
+        if exprs.is_empty() {
+            return Ok(Expr::Str(String::new(), pos));
+        }
+        let mut acc = exprs.remove(0);
+        for e in exprs {
+            acc = Expr::Binary { op: BinOp::Add, lhs: Box::new(acc), rhs: Box::new(e), pos };
+        }
+        Ok(acc)
     }
 
     // ---- expressions, precedence climbing ----
@@ -569,6 +630,7 @@ impl Parser {
             Tok::True => Ok(Expr::Bool(true, pos)),
             Tok::False => Ok(Expr::Bool(false, pos)),
             Tok::Ident(name) => Ok(Expr::Var { name, pos }),
+            Tok::FStr(parts) => self.desugar_fstring(parts, pos),
             Tok::LParen => {
                 let e = self.expr()?;
                 self.eat(&Tok::RParen)?;

@@ -1,4 +1,4 @@
-# Axon Language Specification (v0.4)
+# Axon Language Specification (v0.5)
 
 Axon is an AI-native, statically typed, ahead-of-time compiled language with a
 Python-style syntax. Design goals: minimal syntax, explicit semantics, native
@@ -86,6 +86,43 @@ print("apple" < "banana")      # true (byte-wise lexicographic)
 - Strings may appear in struct fields, array elements, parameters, and
   returns; copies share the underlying bytes (safe: immutability).
 - No string indexing yet (returns no `char` type — roadmap).
+
+## Loops
+
+```axon
+while cond:
+    ...
+
+for i in range(n):            # 0, 1, ..., n-1
+for i in range(a, b):         # a .. b-1
+for i in range(a, b, step):   # step may be negative (step != 0)
+for x in arr:                 # iterate array elements (each copied into x)
+```
+
+- `range(...)` takes 1..3 `int` arguments; start/end/step are evaluated once
+  at loop entry (Python semantics). A zero step loops forever (undefined, not
+  checked).
+- `for x in arr` requires an array; the loop variable gets the element type.
+  Iterating strings is not supported yet.
+- The loop variable follows normal binding rules (first use declares; the
+  type is fixed thereafter).
+- `break` exits the innermost loop; `continue` jumps to the next iteration.
+  Both are errors outside a loop.
+
+## f-strings
+
+```axon
+name = "axon"
+print(f"hello {name}, {1 + 2}, {True}")   # hello axon, 3, true
+print(f"braces: {{literal}}")             # braces: {literal}
+```
+
+- `{expr}` embeds any expression whose type is `int`, `float`, `bool`, or
+  `string`; the expression may contain string literals and nested calls.
+- `{{` and `}}` produce literal braces.
+- f-strings desugar to string concatenation via the `str()` builtin:
+  ints format as decimal, floats as `%f` (6 decimals), bools as
+  `true`/`false`.
 
 ## Value semantics (arrays and structs)
 
@@ -175,6 +212,7 @@ primary := INT | FLOAT | STRING | True | False
 - `print(expr)` — one `int`, `float`, `bool`, or `string` (no arrays/structs);
   prints a trailing newline. Floats print with `%f` (6 decimals).
 - `len(x)` — array: static length; string: byte length. Returns `int`.
+- `str(x)` — convert `int`/`float`/`bool`/`string` to `string`.
 
 ## Tooling contract (AI-native)
 
@@ -194,7 +232,7 @@ Axon compiles through LLVM O3 to native machine code — measured equal to
 ## Roadmap
 
 1. String indexing / iteration (needs a `char` type or substring slices).
-2. `for` loops over ranges/iterables; f-string interpolation.
+2. Format specifiers in f-strings (`{x:.2f}`); f-string multi-line.
 3. Memory: string interning or arena freeing (currently concatenation leaks).
 4. Core library written **in Axon itself** (algorithms, data structures).
 5. Self-hosting: rewrite the compiler in Axon.

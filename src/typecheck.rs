@@ -87,7 +87,7 @@ pub fn check(program: &Program) -> Result<(StructTable, HashMap<String, FnSig>),
     for f in &program.funcs {
         let mut scopes: Vec<(String, Type)> =
             f.params.iter().map(|p| (p.name.clone(), p.ty.clone())).collect();
-        let returns_all = check_block(&f.body, f, &sigs, &structs, &mut scopes)?;
+        let returns_all = check_block(&f.body, f, &sigs, &structs, &mut scopes, 0)?;
         // strict rule: non-void functions must return a value on every path
         if f.ret != Type::Void && !returns_all {
             return Err(Diag {
@@ -225,6 +225,7 @@ fn check_block(
     sigs: &HashMap<String, FnSig>,
     structs: &StructTable,
     scopes: &mut Vec<(String, Type)>,
+    loop_depth: usize,
 ) -> Result<bool, Diag> {
     let mut guarantees_return = false;
     for stmt in &block.stmts {
@@ -237,7 +238,7 @@ fn check_block(
                 message: "unreachable statement after 'return'".into(),
             });
         }
-        check_stmt(stmt, f, sigs, structs, scopes)?;
+        check_stmt(stmt, f, sigs, structs, scopes, loop_depth)?;
         guarantees_return = stmt_guarantees_return(stmt);
     }
     Ok(guarantees_return)
@@ -249,6 +250,9 @@ fn stmt_pos(s: &Stmt) -> Pos {
         | Stmt::Assign { pos, .. }
         | Stmt::If { pos, .. }
         | Stmt::While { pos, .. }
+        | Stmt::For { pos, .. }
+        | Stmt::Break { pos }
+        | Stmt::Continue { pos }
         | Stmt::Return { pos, .. } => *pos,
         Stmt::Pass => Pos { line: 0, col: 0 },
         Stmt::ExprStmt { expr } => expr.pos(),
@@ -261,6 +265,7 @@ fn check_stmt(
     sigs: &HashMap<String, FnSig>,
     structs: &StructTable,
     scopes: &mut Vec<(String, Type)>,
+    loop_depth: usize,
 ) -> Result<(), Diag> {
     match stmt {
         Stmt::Let { name, ty, expr, pos } => {
@@ -347,9 +352,9 @@ fn check_stmt(
                     message: format!("'if' condition must be bool, found {t}"),
                 });
             }
-            check_block(then_block, f, sigs, structs, scopes)?;
+            check_block(then_block, f, sigs, structs, scopes, loop_depth)?;
             if let Some(eb) = else_block {
-                check_block(eb, f, sigs, structs, scopes)?;
+                check_block(eb, f, sigs, structs, scopes, loop_depth)?;
             }
             Ok(())
         }
@@ -363,7 +368,86 @@ fn check_stmt(
                     message: format!("'while' condition must be bool, found {t}"),
                 });
             }
-            check_block(body, f, sigs, structs, scopes)?;
+            check_block(body, f, sigs, structs, scopes, loop_depth + 1)?;
+            Ok(())
+        }
+        Stmt::For { var, iter, body, pos } => {
+            let var_ty = match iter {
+                ForIter::Range(args) => {
+                    if args.is_empty() || args.len() > 3 {
+                        return Err(Diag {
+                            stage: "type",
+                            line: pos.line,
+                            col: pos.col,
+                            message: format!("range expects 1 to 3 arguments, found {}", args.len()),
+                        });
+                    }
+                    for a in args {
+                        let t = check_expr(a, sigs, structs, scopes)?;
+                        if t != Type::Int {
+                            return Err(Diag {
+                                stage: "type",
+                                line: a.pos().line,
+                                col: a.pos().col,
+                                message: format!("range arguments must be int, found {t}"),
+                            });
+                        }
+                    }
+                    Type::Int
+                }
+                ForIter::Array(e) => {
+                    let t = check_expr(e, sigs, structs, scopes)?;
+                    match t {
+                        Type::Array { elem, .. } => *elem,
+                        other => {
+                            return Err(Diag {
+                                stage: "type",
+                                line: pos.line,
+                                col: pos.col,
+                                message: format!("'for' can only iterate over arrays, found {other}"),
+                            })
+                        }
+                    }
+                }
+            };
+            match lookup(scopes, var) {
+                Some(dt) => {
+                    if dt != var_ty {
+                        return Err(Diag {
+                            stage: "type",
+                            line: pos.line,
+                            col: pos.col,
+                            message: format!("loop variable '{var}' is already {dt}, cannot reuse as {var_ty}"),
+                        });
+                    }
+                }
+                None => {
+                    scopes.push((var.clone(), var_ty));
+                }
+            }
+            check_block(body, f, sigs, structs, scopes, loop_depth + 1)?;
+            Ok(())
+        }
+        Stmt::Break { pos } => {
+            if loop_depth == 0 {
+                return Err(Diag {
+                    stage: "type",
+                    line: pos.line,
+                    col: pos.col,
+                    message: "'break' outside of a loop".into(),
+                });
+            }
+            Ok(())
+        }
+        Stmt::Continue { pos } => {
+            if loop_depth == 0 {
+                return Err(Diag {
+                    stage: "type",
+                    line: pos.line,
+                    col: pos.col,
+                    message: "'continue' outside of a loop".into(),
+                });
+            }
             Ok(())
         }
         Stmt::Return { expr, pos } => {
@@ -657,6 +741,26 @@ fn check_expr(
                     });
                 }
                 return Ok(Type::Int);
+            }
+            if name == "str" {
+                if args.len() != 1 || args[0].name.is_some() {
+                    return Err(Diag {
+                        stage: "type",
+                        line: pos.line,
+                        col: pos.col,
+                        message: "str expects exactly 1 positional argument".into(),
+                    });
+                }
+                let t = check_expr(&args[0].value, sigs, structs, scopes)?;
+                if !t.is_printable() {
+                    return Err(Diag {
+                        stage: "type",
+                        line: pos.line,
+                        col: pos.col,
+                        message: format!("cannot convert {t} to string"),
+                    });
+                }
+                return Ok(Type::Str);
             }
             // struct construction: Name(field=value, ...)
             if sigs.get(name).is_none() {

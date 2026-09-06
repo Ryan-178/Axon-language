@@ -790,3 +790,199 @@ fn rejects_compare_string_int() {
     );
     assert!(msg.contains("two int, two float, or two string"), "{msg}");
 }
+
+// ---- for loops / break / continue / f-strings (v0.5) ----
+
+#[test]
+fn for_range_forms() {
+    let out = build_and_run(
+        r#"
+        def main() -> int:
+            for i in range(4):
+                print(i)
+            for i in range(2, 5):
+                print(i)
+            for i in range(0, 10, 3):
+                print(i)
+            for i in range(5, 0, -1):
+                print(i)
+            return 0
+        "#,
+    );
+    assert_eq!(out, "0\n1\n2\n3\n2\n3\n4\n0\n3\n6\n9\n5\n4\n3\n2\n1\n");
+}
+
+#[test]
+fn for_array_iteration() {
+    let out = build_and_run(
+        r#"
+        struct P:
+            v: int
+
+        def main() -> int:
+            total = 0
+            for x in [10, 20, 30]:
+                total = total + x
+            print(total)
+            pts: [P; 2] = [P(v=5), P(v=7)]
+            s = 0
+            for p in pts:
+                s = s + p.v
+            print(s)
+            names = ["ab", "cde"]
+            lens = 0
+            for n in names:
+                lens = lens + len(n)
+            print(lens)
+            return 0
+        "#,
+    );
+    assert_eq!(out, "60\n12\n5\n");
+}
+
+#[test]
+fn for_nested_and_reuse() {
+    let out = build_and_run(
+        r#"
+        def main() -> int:
+            count = 0
+            for i in range(3):
+                for j in range(3):
+                    count = count + 1
+            print(count)
+            for i in range(2):
+                print(i)
+            for i in range(2, 4):
+                print(i)
+            return 0
+        "#,
+    );
+    assert_eq!(out, "9\n0\n1\n2\n3\n");
+}
+
+#[test]
+fn break_and_continue() {
+    let out = build_and_run(
+        r#"
+        def main() -> int:
+            i = 0
+            while True:
+                i = i + 1
+                if i == 3:
+                    break
+            print(i)
+            total = 0
+            for i in range(10):
+                if i % 2 == 0:
+                    continue
+                total = total + i
+            print(total)
+            found = -1
+            for j in range(20):
+                if j * j > 50:
+                    found = j
+                    break
+            print(found)
+            return 0
+        "#,
+    );
+    assert_eq!(out, "3\n25\n8\n");
+}
+
+#[test]
+fn f_string_basics() {
+    let out = build_and_run(
+        r#"
+        def main() -> int:
+            name = "axon"
+            version = 5
+            print(f"hello {name}!")
+            print(f"v{version}, {version * 2}")
+            print(f"{True}/{False}")
+            print(f"braces: {{literal}}")
+            print(f"expr: {[1, 2, 3][1] + len(name)}")
+            print(f"")
+            print(f"just text")
+            return 0
+        "#,
+    );
+    assert_eq!(out, "hello axon!\nv5, 10\ntrue/false\nbraces: {literal}\nexpr: 6\n\njust text\n");
+}
+
+#[test]
+fn f_string_with_function_calls() {
+    let out = build_and_run(
+        r#"
+        def double(n: int) -> int:
+            return n * 2
+
+        def main() -> int:
+            for i in range(1, 4):
+                print(f"{i} -> {double(i)}")
+            s = f"{double(21)}"
+            print(s)
+            print(len(s))
+            return 0
+        "#,
+    );
+    assert_eq!(out, "1 -> 2\n2 -> 4\n3 -> 6\n42\n2\n");
+}
+
+#[test]
+fn str_builtin() {
+    let out = build_and_run(
+        r#"
+        def main() -> int:
+            print(str(42))
+            print(str(-7))
+            print(str(True))
+            print(str(False))
+            print(str(1.5))
+            print(str("already"))
+            print(len(str(12345)))
+            print(str(2 + 3) == "5")
+            return 0
+        "#,
+    );
+    assert_eq!(out, "42\n-7\ntrue\nfalse\n1.500000\nalready\n5\ntrue\n");
+}
+
+#[test]
+fn rejects_break_outside_loop() {
+    let msg = expect_compile_error(
+        "def main() -> int:\n    break\n    return 0",
+    );
+    assert!(msg.contains("'break' outside of a loop"), "{msg}");
+}
+
+#[test]
+fn rejects_continue_outside_loop() {
+    let msg = expect_compile_error(
+        "def main() -> int:\n    continue\n    return 0",
+    );
+    assert!(msg.contains("'continue' outside of a loop"), "{msg}");
+}
+
+#[test]
+fn rejects_range_float_arg() {
+    let msg = expect_compile_error(
+        "def main() -> int:\n    for i in range(1.5):\n        print(i)\n    return 0",
+    );
+    assert!(msg.contains("range arguments must be int"), "{msg}");
+}
+
+#[test]
+fn rejects_for_over_int() {
+    let msg = expect_compile_error(
+        "def main() -> int:\n    for x in 5:\n        print(x)\n    return 0",
+    );
+    assert!(msg.contains("'for' can only iterate over arrays"), "{msg}");
+}
+
+#[test]
+fn rejects_fstring_of_array() {
+    let msg = expect_compile_error(
+        "def main() -> int:\n    print(f\"{[1, 2]}\")\n    return 0",
+    );
+    assert!(msg.contains("cannot convert [int; 2] to string"), "{msg}");
+}

@@ -78,6 +78,9 @@ struct Gen {
     iter_temps: HashMap<usize, LLVMValueRef>,
     val_temps: HashMap<usize, LLVMValueRef>,
     externs: HashMap<String, (LLVMValueRef, LLVMTypeRef)>,
+    /// stack of (break_target, continue_target) for nested loops
+    loop_stack: Vec<(LLVMBasicBlockRef, LLVMBasicBlockRef)>,
+    loop_count: usize,
 }
 
 impl Gen {
@@ -110,6 +113,8 @@ impl Gen {
             iter_temps: HashMap::new(),
             val_temps: HashMap::new(),
             externs: HashMap::new(),
+            loop_stack: Vec::new(),
+            loop_count: 0,
         }
     }
 
@@ -396,6 +401,148 @@ impl Gen {
         Ok(())
     }
 
+    /// `for var in range(...)` / `for var in array:` — start/end/step and the
+    /// array pointer are evaluated once at loop entry (Python semantics).
+    unsafe fn emit_for(
+        &mut self,
+        var: &str,
+        iter: &ForIter,
+        body: &Block,
+        locals: &mut Locals,
+        fn_ret: &Type,
+    ) -> Result<(), String> {
+        let fn_ref = self.fns[&self.cur_fn].ref_;
+
+        // loop variable type + iteration source
+        let (start, end, step, var_ty, arr_info) = match iter {
+            ForIter::Range(args) => {
+                // range(n) → 0..n · range(a, b) → a..b · range(a, b, step)
+                let (s, e, st) = match args.len() {
+                    1 => {
+                        let (e, _) = self.emit_expr(&args[0], locals)?;
+                        (self.const_int(&Type::Int, 0), e, self.const_int(&Type::Int, 1))
+                    }
+                    2 => {
+                        let (s, _) = self.emit_expr(&args[0], locals)?;
+                        let (e, _) = self.emit_expr(&args[1], locals)?;
+                        (s, e, self.const_int(&Type::Int, 1))
+                    }
+                    _ => {
+                        let (s, _) = self.emit_expr(&args[0], locals)?;
+                        let (e, _) = self.emit_expr(&args[1], locals)?;
+                        let (st, _) = self.emit_expr(&args[2], locals)?;
+                        (s, e, st)
+                    }
+                };
+                (s, e, st, Type::Int, None)
+            }
+            ForIter::Array(e) => {
+                // evaluated once: pointer to the array + static length
+                let (arr_ptr, arr_ty) = self.emit_aggregate_ptr(e, locals)?;
+                let (elem, len) = match &arr_ty {
+                    Type::Array { elem, len } => ((**elem).clone(), *len),
+                    other => return Err(format!("internal error: iterating {other} at codegen")),
+                };
+                (
+                    self.const_int(&Type::Int, 0),
+                    self.const_int(&Type::Int, len as i64),
+                    self.const_int(&Type::Int, 1),
+                    elem.clone(),
+                    Some((arr_ptr, len)),
+                )
+            }
+        };
+
+        // variable slot (declare on first use, reuse otherwise)
+        let var_slot = match locals.get(var).cloned() {
+            Some((slot, _dt)) => slot,
+            None => {
+                let slot = self.alloca_in_entry(self.ty_of(&var_ty), &format!("var.{var}"));
+                locals.insert(var.to_string(), (slot, var_ty.clone()));
+                slot
+            }
+        };
+
+        // internal index for array iteration (the array pointer is an SSA
+        // value and survives across blocks; no temp storage needed)
+        let mut idx_slot: Option<LLVMValueRef> = None;
+        let mut arr_ty_real: Option<Type> = None;
+        let mut arr_base: LLVMValueRef = std::ptr::null_mut();
+        if let Some((arr_ptr, len)) = arr_info {
+            let id = self.loop_count;
+            self.loop_count += 1;
+            let idx = self.alloca_in_entry(self.i64, &format!("for.idx{id}"));
+            LLVMBuildStore(self.builder, LLVMConstInt(self.i64, 0, 0), idx);
+            idx_slot = Some(idx);
+            arr_ty_real = Some(Type::Array { elem: Box::new(var_ty.clone()), len });
+            arr_base = arr_ptr;
+        }
+
+        // range: initialize the variable with the start value
+        if arr_info.is_none() {
+            LLVMBuildStore(self.builder, start, var_slot);
+        }
+
+        // induction slot: the loop variable itself for ranges, the hidden
+        // i64 index for array iteration (elements are copied in the body)
+        let (ind_slot, ind_ty) = match &idx_slot {
+            Some(idx) => (*idx, Type::Int),
+            None => (var_slot, var_ty.clone()),
+        };
+
+        let cond_bb = self.add_bb(fn_ref, "for.cond");
+        let body_bb = self.add_bb(fn_ref, "for.body");
+        let cont_bb = self.add_bb(fn_ref, "for.cont");
+        let end_bb = self.add_bb(fn_ref, "for.end");
+
+        let zero = self.const_int(&Type::Int, 0);
+        LLVMBuildBr(self.builder, cond_bb);
+
+        // cond: (step > 0) ? (i < end) : (i > end)
+        self.pos(cond_bb);
+        let i = LLVMBuildLoad2(self.builder, self.ty_of(&ind_ty), ind_slot, self.cstr("for.i").as_ptr());
+        let plus = LLVMBuildICmp(self.builder, INT_SLT, i, end, self.cstr("for.lt").as_ptr());
+        let minus = LLVMBuildICmp(self.builder, INT_SGT, i, end, self.cstr("for.gt").as_ptr());
+        let step_pos = LLVMBuildICmp(self.builder, INT_SGT, step, zero, self.cstr("for.steppos").as_ptr());
+        let n = self.cstr("for.c");
+        let c = LLVMBuildSelect(self.builder, step_pos, plus, minus, n.as_ptr());
+        LLVMBuildCondBr(self.builder, c, body_bb, end_bb);
+
+        // body
+        self.pos(body_bb);
+        if let (Some(idx), Some(arr_ty_real)) = (idx_slot, arr_ty_real.clone()) {
+            let idx_v = LLVMBuildLoad2(self.builder, self.i64, idx, self.cstr("for.idxv").as_ptr());
+            let mut indices = [zero, idx_v];
+            let nn = self.cstr("for.elem");
+            let elem_ptr = LLVMBuildGEP2(
+                self.builder,
+                self.ty_of(&arr_ty_real),
+                arr_base,
+                indices.as_mut_ptr(),
+                2,
+                nn.as_ptr(),
+            );
+            let ev = LLVMBuildLoad2(self.builder, self.ty_of(&var_ty), elem_ptr, self.cstr("for.val").as_ptr());
+            LLVMBuildStore(self.builder, ev, var_slot);
+        }
+        self.loop_stack.push((end_bb, cont_bb));
+        self.emit_block_into(body, locals, fn_ret)?;
+        self.loop_stack.pop();
+        if !self.terminated() {
+            LLVMBuildBr(self.builder, cont_bb);
+        }
+
+        // continue target: increment the induction slot only
+        self.pos(cont_bb);
+        let i2 = LLVMBuildLoad2(self.builder, self.ty_of(&ind_ty), ind_slot, self.cstr("for.i").as_ptr());
+        let next = LLVMBuildAdd(self.builder, i2, step, self.cstr("for.next").as_ptr());
+        LLVMBuildStore(self.builder, next, ind_slot);
+        LLVMBuildBr(self.builder, cond_bb);
+
+        self.pos(end_bb);
+        Ok(())
+    }
+
     unsafe fn emit_object(&mut self, obj_path: &std::path::Path) -> Result<(), String> {
         let path_c = self.cstr(&obj_path.to_string_lossy());
         let mut err: *mut std::os::raw::c_char = std::ptr::null_mut();
@@ -511,12 +658,31 @@ impl Gen {
                 LLVMBuildCondBr(self.builder, c, body_bb, end_bb);
 
                 self.pos(body_bb);
+                self.loop_stack.push((end_bb, cond_bb));
                 self.emit_block_into(body, locals, fn_ret)?;
+                self.loop_stack.pop();
                 if !self.terminated() {
                     LLVMBuildBr(self.builder, cond_bb);
                 }
 
                 self.pos(end_bb);
+                Ok(())
+            }
+            Stmt::For { var, iter, body, .. } => self.emit_for(var, iter, body, locals, fn_ret),
+            Stmt::Break { .. } => {
+                let (brk, _cont) = *self
+                    .loop_stack
+                    .last()
+                    .ok_or("internal error: break outside loop at codegen")?;
+                LLVMBuildBr(self.builder, brk);
+                Ok(())
+            }
+            Stmt::Continue { .. } => {
+                let (_brk, cont) = *self
+                    .loop_stack
+                    .last()
+                    .ok_or("internal error: continue outside loop at codegen")?;
+                LLVMBuildBr(self.builder, cont);
                 Ok(())
             }
             Stmt::Return { expr, .. } => match expr {
@@ -584,6 +750,9 @@ impl Gen {
                 }
                 if name == "len" {
                     return Ok(Type::Int);
+                }
+                if name == "str" {
+                    return Ok(Type::Str);
                 }
                 Err(format!("internal error: unknown call '{name}' in type hint"))
             }
@@ -853,6 +1022,49 @@ impl Gen {
                             Ok((n, Type::Int))
                         }
                         other => Err(format!("internal error: len on {other} at codegen")),
+                    };
+                }
+                if name == "str" {
+                    if args.len() != 1 {
+                        return Err("internal error: str expects 1 argument".into());
+                    }
+                    let (v, t) = self.emit_expr(&args[0].value, locals)?;
+                    return match t {
+                        Type::Str => Ok((v, Type::Str)),
+                        Type::Int | Type::Float => {
+                            let (malloc_f, malloc_ty) = self.get_extern("malloc", self.ptr, &[self.i64], false);
+                            let (snprintf_f, snprintf_ty) =
+                                self.get_extern("snprintf", self.i32, &[self.ptr, self.i64, self.ptr], true);
+                            let cap = if t == Type::Int { 32u64 } else { 64 };
+                            let mut margs = [LLVMConstInt(self.i64, cap, 0)];
+                            let buf = LLVMBuildCall2(self.builder, malloc_ty, malloc_f, margs.as_mut_ptr(), 1, self.cstr("str.buf").as_ptr());
+                            let fmt = if t == Type::Int { "%lld" } else { "%f" };
+                            let fmt_ptr = self.fmt_lit(fmt);
+                            let mut sargs = [buf, LLVMConstInt(self.i64, cap, 0), fmt_ptr, v];
+                            LLVMBuildCall2(self.builder, snprintf_ty, snprintf_f, sargs.as_mut_ptr(), 4, self.cstr("").as_ptr());
+                            Ok((buf, Type::Str))
+                        }
+                        Type::Bool => {
+                            // branch to static "true"/"false", phi the pointers
+                            let st = self.string_lit("true");
+                            let sf = self.string_lit("false");
+                            let fn_ref = self.fns[&self.cur_fn].ref_;
+                            let tbb = self.add_bb(fn_ref, "str.true");
+                            let fbb = self.add_bb(fn_ref, "str.false");
+                            let end = self.add_bb(fn_ref, "str.end");
+                            LLVMBuildCondBr(self.builder, v, tbb, fbb);
+                            self.pos(tbb);
+                            LLVMBuildBr(self.builder, end);
+                            self.pos(fbb);
+                            LLVMBuildBr(self.builder, end);
+                            self.pos(end);
+                            let phi = LLVMBuildPhi(self.builder, self.ptr, self.cstr("str.bool").as_ptr());
+                            let mut vals = [st, sf];
+                            let mut bbs = [tbb, fbb];
+                            LLVMAddIncoming(phi, vals.as_mut_ptr(), bbs.as_mut_ptr(), 2);
+                            Ok((phi, Type::Str))
+                        }
+                        other => Err(format!("internal error: str on {other} at codegen")),
                     };
                 }
                 // struct construction: Name(field=value, ...)

@@ -2,7 +2,7 @@
 
 Axon: AI-native compiled language with Python-style syntax (indentation
 blocks, `def`, `elif`, `#` comments) compiled through LLVM 18 to native code —
-measured at parity with `clang -O3`. This repo IS the compiler (v0.4, written
+measured at parity with `clang -O3`. This repo IS the compiler (v0.5, written
 in Rust). Language sources use the `.ax` extension. Language rules live in
 `docs/spec.md` — keep it in sync with `src/parser.rs` + `src/typecheck.rs`
 when the grammar changes.
@@ -11,7 +11,7 @@ when the grammar changes.
 
 ```powershell
 cargo build                                   # build the `axon` compiler
-cargo test                                    # 50 integration tests (compile .ax -> exe -> run)
+cargo test                                    # 62 integration tests (compile .ax -> exe -> run)
 cargo run -- run examples\hello.ax            # compile+run an Axon program
 cargo run -- build examples\fib.ax -o f.exe   # emit a native executable (LLVM O3 default)
 cargo run -- ir examples\fib.ax               # dump optimized LLVM IR
@@ -116,7 +116,16 @@ src/main.rs           CLI (build / run / ir), --json diagnostics
   NUL (`emit_str_concat`); comparisons/ordering go through C runtime
   `strcmp`; `len(str)` is `strlen`. Concat results are **never freed**
   (immutable strings, no GC yet — documented behavior). C runtime functions
-  (malloc/strlen/strcmp) are declared lazily via `Gen::get_extern`.
+  (malloc/strlen/strcmp/snprintf) are declared lazily via `Gen::get_extern`.
+- `for` loops: ranges and arrays share one emission path; the **induction
+  slot is separate from the loop variable** for arrays (hidden i64 index; the
+  element variable is a plain copy written in the body preamble). start/end/
+  step and the array pointer are evaluated once at entry. `break`/`continue`
+  target blocks ride the `loop_stack`.
+- f-strings lex into `FStrPart` lists (sub-expressions re-lexed in parens to
+  defeat the indent tracker, padding preserved for column-accurate errors),
+  then desugar in the parser to `"lit" + str(expr) + ...` chains. `str()`
+  uses snprintf (int/float) or a branch-phi over static "true"/"false".
 
 ## Language semantics (enforced, keep strict)
 
