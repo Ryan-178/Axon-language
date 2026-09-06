@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    env:
+      AXON_LLVM_DIR: "C:\\Program Files\\LLVM"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Install LLVM
+        shell: pwsh
+        run: |
+          winget install --id LLVM.LLVM --accept-source-agreements --accept-package-agreements --silent
+          Add-Content $env:GITHUB_PATH "C:\Program Files\LLVM\bin"
+
+      - name: Build
+        run: cargo build
+
+      - name: Test (50 end-to-end pipeline tests)
+        run: cargo test
+
+      - name: Smoke test
+        shell: pwsh
+        run: |
+          cargo run -- run examples\hello.ax
+          cargo run -- run examples\strings.ax
+          cargo run -- build examples\primes.ax -o primes.exe
+          $count = .\primes.exe
+          if ("$count" -ne "9592") { throw "primes returned $count, expected 9592" }
