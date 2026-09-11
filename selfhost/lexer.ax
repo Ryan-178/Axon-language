@@ -1,0 +1,763 @@
+# Aoxn lexer, written in Aoxn (self-hosting stage 1).
+#
+# A faithful port of the Rust lexer: Python-style layout (NEWLINE / INDENT /
+# DEDENT), '#' comments, paren continuation, f-strings (raw FSTR token; the
+# parser stage re-lexes sub-expressions), escapes, floats.
+#
+# Tokens live in parallel Vecs (one 8-byte slot per field) inside LexState;
+# all functions are write-back style: `st = lex_step(st)`.
+
+import "../stdlib/stdlib.ax"
+
+# ---- token kinds ----
+def TK_EOF() -> int:
+    return 0
+
+def TK_IDENT() -> int:
+    return 1
+
+def TK_INT() -> int:
+    return 2
+
+def TK_FLOAT() -> int:
+    return 3
+
+def TK_STR() -> int:
+    return 4
+
+def TK_FSTR() -> int:
+    return 5
+
+def TK_DEF() -> int:
+    return 6
+
+def TK_STRUCT() -> int:
+    return 7
+
+def TK_EXTERN() -> int:
+    return 8
+
+def TK_IMPORT() -> int:
+    return 9
+
+def TK_IF() -> int:
+    return 10
+
+def TK_ELIF() -> int:
+    return 11
+
+def TK_ELSE() -> int:
+    return 12
+
+def TK_WHILE() -> int:
+    return 13
+
+def TK_FOR() -> int:
+    return 14
+
+def TK_IN() -> int:
+    return 15
+
+def TK_BREAK() -> int:
+    return 16
+
+def TK_CONTINUE() -> int:
+    return 17
+
+def TK_RETURN() -> int:
+    return 18
+
+def TK_PASS() -> int:
+    return 19
+
+def TK_AND() -> int:
+    return 20
+
+def TK_OR() -> int:
+    return 21
+
+def TK_NOT() -> int:
+    return 22
+
+def TK_TRUE() -> int:
+    return 23
+
+def TK_FALSE() -> int:
+    return 24
+
+def TK_TYINT() -> int:
+    return 25
+
+def TK_TYFLOAT() -> int:
+    return 26
+
+def TK_TYBOOL() -> int:
+    return 27
+
+def TK_TYSTRING() -> int:
+    return 28
+
+def TK_TYVOID() -> int:
+    return 29
+
+def TK_NEWLINE() -> int:
+    return 30
+
+def TK_INDENT() -> int:
+    return 31
+
+def TK_DEDENT() -> int:
+    return 32
+
+def TK_LPAREN() -> int:
+    return 33
+
+def TK_RPAREN() -> int:
+    return 34
+
+def TK_LBRACKET() -> int:
+    return 35
+
+def TK_RBRACKET() -> int:
+    return 36
+
+def TK_DOT() -> int:
+    return 37
+
+def TK_COMMA() -> int:
+    return 38
+
+def TK_COLON() -> int:
+    return 39
+
+def TK_ARROW() -> int:
+    return 40
+
+def TK_ASSIGN() -> int:
+    return 41
+
+def TK_EQ() -> int:
+    return 42
+
+def TK_NE() -> int:
+    return 43
+
+def TK_LT() -> int:
+    return 44
+
+def TK_LE() -> int:
+    return 45
+
+def TK_GT() -> int:
+    return 46
+
+def TK_GE() -> int:
+    return 47
+
+def TK_ANDAND() -> int:
+    return 48
+
+def TK_OROR() -> int:
+    return 49
+
+def TK_PLUS() -> int:
+    return 50
+
+def TK_MINUS() -> int:
+    return 51
+
+def TK_STAR() -> int:
+    return 52
+
+def TK_SLASH() -> int:
+    return 53
+
+def TK_PERCENT() -> int:
+    return 54
+
+def TK_BANG() -> int:
+    return 55
+
+def TK_ERROR() -> int:
+    return 56
+
+# ---- helpers ----
+
+def chr_str(c: int) -> string:
+    buf = malloc(2)
+    store_u8(buf, 0, c)
+    store_u8(buf, 1, 0)
+    return as_string(buf)
+
+def str_slice(s: string, start: int, n: int) -> string:
+    buf = malloc(n + 1)
+    i = 0
+    while i < n:
+        store_u8(buf, i, str_get(s, start + i))
+        i = i + 1
+    store_u8(buf, n, 0)
+    return as_string(buf)
+
+def parse_int(s: string) -> int:
+    v = 0
+    i = 0
+    while i < len(s):
+        v = v * 10 + (str_get(s, i) - 48)
+        i = i + 1
+    return v
+
+# ---- lexer state (tokens included) ----
+
+struct LexState:
+    src: string
+    n: int
+    pos: int
+    line: int
+    col: int
+    paren_depth: int
+    at_line_start: int      # 0 / 1
+    error: int              # 0 / 1
+    indents: Vec
+    kinds: Vec
+    lines: Vec
+    cols: Vec
+    ivals: Vec
+    svals: Vec
+
+def lex_state_new(src: string) -> LexState:
+    # the indent stack is seeded with 0 (top-level), like the Rust original
+    return LexState(
+        src=src,
+        n=len(src),
+        pos=0,
+        line=1,
+        col=1,
+        paren_depth=0,
+        at_line_start=1,
+        error=0,
+        indents=vec_push(vec_new(), 0),
+        kinds=vec_new(),
+        lines=vec_new(),
+        cols=vec_new(),
+        ivals=vec_new(),
+        svals=vec_new(),
+    )
+
+def emit(st: LexState, kind: int, ival: int, sval: string) -> LexState:
+    st.kinds = vec_push(st.kinds, kind)
+    st.lines = vec_push(st.lines, st.line)
+    st.cols = vec_push(st.cols, st.col)
+    st.ivals = vec_push(st.ivals, ival)
+    st.svals = vec_push(st.svals, as_ptr(sval))
+    return st
+
+def tk_kind(st: LexState, i: int) -> int:
+    return vec_get(st.kinds, i)
+
+def tk_line(st: LexState, i: int) -> int:
+    return vec_get(st.lines, i)
+
+def tk_col(st: LexState, i: int) -> int:
+    return vec_get(st.cols, i)
+
+def tk_ival(st: LexState, i: int) -> int:
+    return vec_get(st.ivals, i)
+
+def tk_sval(st: LexState, i: int) -> string:
+    return as_string(vec_get(st.svals, i))
+
+# ---- scanning primitives (write-back style) ----
+
+def cur_byte(st: LexState) -> int:
+    if st.pos >= st.n:
+        return -1
+    return str_get(st.src, st.pos)
+
+def peek_byte(st: LexState, k: int) -> int:
+    if st.pos + k >= st.n:
+        return -1
+    return str_get(st.src, st.pos + k)
+
+def bump(st: LexState) -> LexState:
+    if st.pos < st.n:
+        if str_get(st.src, st.pos) == 10:
+            st.line = st.line + 1
+            st.col = 1
+        else:
+            st.col = st.col + 1
+        st.pos = st.pos + 1
+    return st
+
+# keyword lookup: returns the token kind or -1 when the word is an identifier
+def keyword_kind(word: string) -> int:
+    if word == "def":
+        return TK_DEF()
+    if word == "struct":
+        return TK_STRUCT()
+    if word == "extern":
+        return TK_EXTERN()
+    if word == "import":
+        return TK_IMPORT()
+    if word == "if":
+        return TK_IF()
+    if word == "elif":
+        return TK_ELIF()
+    if word == "else":
+        return TK_ELSE()
+    if word == "while":
+        return TK_WHILE()
+    if word == "for":
+        return TK_FOR()
+    if word == "in":
+        return TK_IN()
+    if word == "break":
+        return TK_BREAK()
+    if word == "continue":
+        return TK_CONTINUE()
+    if word == "return":
+        return TK_RETURN()
+    if word == "pass":
+        return TK_PASS()
+    if word == "and":
+        return TK_AND()
+    if word == "or":
+        return TK_OR()
+    if word == "not":
+        return TK_NOT()
+    if word == "true":
+        return TK_TRUE()
+    if word == "True":
+        return TK_TRUE()
+    if word == "false":
+        return TK_FALSE()
+    if word == "False":
+        return TK_FALSE()
+    if word == "int":
+        return TK_TYINT()
+    if word == "float":
+        return TK_TYFLOAT()
+    if word == "bool":
+        return TK_TYBOOL()
+    if word == "string":
+        return TK_TYSTRING()
+    if word == "void":
+        return TK_TYVOID()
+    return -1
+
+# ---- the main lexer loop ----
+# on a lexical error an TK_ERROR token is emitted last and scanning stops.
+
+def lex_all(st0: LexState) -> LexState:
+    st = st0
+
+    while st.error == 0:
+        # ---- line start: measure indentation ----
+        if st.at_line_start == 1 and st.paren_depth == 0:
+            indent = 0
+            while cur_byte(st) == 32 or cur_byte(st) == 9:
+                if cur_byte(st) == 9:
+                    indent = (indent / 4 + 1) * 4
+                else:
+                    indent = indent + 1
+                st = bump(st)
+            c = cur_byte(st)
+            if c == -1:
+                st.at_line_start = 0
+            elif c == 10 or c == 13:
+                # blank line: no tokens
+                if c == 13:
+                    st = bump(st)
+                st = bump(st)
+                continue
+            elif c == 35:
+                # comment-only line: no tokens
+                while cur_byte(st) != 10 and cur_byte(st) != -1:
+                    st = bump(st)
+                continue
+            else:
+                top = vec_get(st.indents, st.indents.len - 1)
+                if indent > top:
+                    st.indents = vec_push(st.indents, indent)
+                    st = emit(st, TK_INDENT(), 0, "")
+                elif indent < top:
+                    while st.indents.len > 1 and vec_get(st.indents, st.indents.len - 1) > indent:
+                        st.indents = vec_pop(st.indents)
+                        st = emit(st, TK_DEDENT(), 0, "")
+                    if vec_get(st.indents, st.indents.len - 1) != indent:
+                        st = emit(st, TK_ERROR(), 0, "unindent does not match any outer indentation level")
+                        st.error = 1
+                st.at_line_start = 0
+                if st.error == 1:
+                    break
+
+        c = cur_byte(st)
+        if c == -1:
+            break
+
+        # ---- whitespace / newline / comment ----
+        if c == 32 or c == 9 or c == 13:
+            st = bump(st)
+            continue
+        if c == 10:
+            st = bump(st)
+            if st.paren_depth == 0:
+                st = emit(st, TK_NEWLINE(), 0, "")
+                st.at_line_start = 1
+            continue
+        if c == 35:
+            while cur_byte(st) != 10 and cur_byte(st) != -1:
+                st = bump(st)
+            continue
+
+        # ---- identifiers / keywords / f-strings ----
+        if (c >= 65 and c <= 90) or (c >= 97 and c <= 122) or c == 95:
+            start = st.pos
+            while True:
+                d = cur_byte(st)
+                if (d >= 65 and d <= 90) or (d >= 97 and d <= 122) or (d >= 48 and d <= 57) or d == 95:
+                    st = bump(st)
+                else:
+                    break
+            word = str_slice(st.src, start, st.pos - start)
+            # f-string: `f"` or `F"` 鈥?emit a raw FSTR token and skip the
+            # literal; the parser stage re-lexes the interpolation parts
+            if (word == "f" or word == "F") and cur_byte(st) == 34:
+                st = emit(st, TK_FSTR(), 0, "")
+                st = bump(st)
+                fstr_done = 0
+                while fstr_done == 0:
+                    fc = cur_byte(st)
+                    if fc == -1:
+                        st = emit(st, TK_ERROR(), 0, "unterminated f-string literal")
+                        st.error = 1
+                        break
+                    if fc == 34:
+                        st = bump(st)
+                        fstr_done = 1
+                    elif fc == 92:
+                        st = bump(st)
+                        st = bump(st)
+                    else:
+                        st = bump(st)
+                continue
+            kw = keyword_kind(word)
+            if kw == -1:
+                st = emit(st, TK_IDENT(), 0, word)
+            else:
+                st = emit(st, kw, 0, "")
+            continue
+
+        # ---- numbers ----
+        if c >= 48 and c <= 57:
+            start = st.pos
+            while True:
+                d = cur_byte(st)
+                if d >= 48 and d <= 57:
+                    st = bump(st)
+                else:
+                    break
+            is_float = 0
+            if cur_byte(st) == 46:
+                nxt = peek_byte(st, 1)
+                if nxt >= 48 and nxt <= 57:
+                    is_float = 1
+                    st = bump(st)
+                    while True:
+                        d = cur_byte(st)
+                        if d >= 48 and d <= 57:
+                            st = bump(st)
+                        else:
+                            break
+            text = str_slice(st.src, start, st.pos - start)
+            if is_float == 1:
+                st = emit(st, TK_FLOAT(), 0, text)
+            else:
+                st = emit(st, TK_INT(), parse_int(text), text)
+            continue
+
+        # ---- strings ----
+        if c == 34:
+            st = bump(st)
+            sval = ""
+            done = 0
+            while done == 0:
+                sc = cur_byte(st)
+                if sc == -1:
+                    st = emit(st, TK_ERROR(), 0, "unterminated string literal")
+                    st.error = 1
+                    break
+                if sc == 34:
+                    st = bump(st)
+                    done = 1
+                elif sc == 92:
+                    st = bump(st)
+                    esc = cur_byte(st)
+                    if esc == 110:
+                        sval = sval + chr_str(10)
+                    elif esc == 116:
+                        sval = sval + chr_str(9)
+                    elif esc == 92:
+                        sval = sval + chr_str(92)
+                    elif esc == 34:
+                        sval = sval + chr_str(34)
+                    else:
+                        st = emit(st, TK_ERROR(), 0, "unknown escape sequence in string literal")
+                        st.error = 1
+                        break
+                    st = bump(st)
+                else:
+                    sval = sval + chr_str(sc)
+                    st = bump(st)
+            if st.error == 1:
+                break
+            st = emit(st, TK_STR(), 0, sval)
+            continue
+
+        # ---- punctuation / operators ----
+        if c == 40 or c == 91:
+            st.paren_depth = st.paren_depth + 1
+            if c == 40:
+                st = emit(st, TK_LPAREN(), 0, "")
+            else:
+                st = emit(st, TK_LBRACKET(), 0, "")
+            st = bump(st)
+            continue
+        if c == 41 or c == 93:
+            st.paren_depth = st.paren_depth - 1
+            if st.paren_depth < 0:
+                st = emit(st, TK_ERROR(), 0, "unmatched closing bracket")
+                st.error = 1
+                break
+            if c == 41:
+                st = emit(st, TK_RPAREN(), 0, "")
+            else:
+                st = emit(st, TK_RBRACKET(), 0, "")
+            st = bump(st)
+            continue
+        if c == 44:
+            st = emit(st, TK_COMMA(), 0, "")
+            st = bump(st)
+            continue
+        if c == 46:
+            st = emit(st, TK_DOT(), 0, "")
+            st = bump(st)
+            continue
+        if c == 58:
+            st = emit(st, TK_COLON(), 0, "")
+            st = bump(st)
+            continue
+        if c == 43:
+            st = emit(st, TK_PLUS(), 0, "")
+            st = bump(st)
+            continue
+        if c == 42:
+            st = emit(st, TK_STAR(), 0, "")
+            st = bump(st)
+            continue
+        if c == 47:
+            st = emit(st, TK_SLASH(), 0, "")
+            st = bump(st)
+            continue
+        if c == 37:
+            st = emit(st, TK_PERCENT(), 0, "")
+            st = bump(st)
+            continue
+        if c == 45:
+            if peek_byte(st, 1) == 62:
+                st = bump(st)
+                st = bump(st)
+                st = emit(st, TK_ARROW(), 0, "")
+            else:
+                st = emit(st, TK_MINUS(), 0, "")
+                st = bump(st)
+            continue
+        if c == 61:
+            if peek_byte(st, 1) == 61:
+                st = bump(st)
+                st = bump(st)
+                st = emit(st, TK_EQ(), 0, "")
+            else:
+                st = emit(st, TK_ASSIGN(), 0, "")
+                st = bump(st)
+            continue
+        if c == 33:
+            if peek_byte(st, 1) == 61:
+                st = bump(st)
+                st = bump(st)
+                st = emit(st, TK_NE(), 0, "")
+            else:
+                st = emit(st, TK_BANG(), 0, "")
+                st = bump(st)
+            continue
+        if c == 60:
+            if peek_byte(st, 1) == 61:
+                st = bump(st)
+                st = bump(st)
+                st = emit(st, TK_LE(), 0, "")
+            else:
+                st = emit(st, TK_LT(), 0, "")
+                st = bump(st)
+            continue
+        if c == 62:
+            if peek_byte(st, 1) == 61:
+                st = bump(st)
+                st = bump(st)
+                st = emit(st, TK_GE(), 0, "")
+            else:
+                st = emit(st, TK_GT(), 0, "")
+                st = bump(st)
+            continue
+        if c == 38:
+            if peek_byte(st, 1) == 38:
+                st = bump(st)
+                st = bump(st)
+                st = emit(st, TK_ANDAND(), 0, "")
+            else:
+                st = emit(st, TK_ERROR(), 0, "unexpected character '&' (did you mean '&&' or 'and'?)")
+                st.error = 1
+                break
+            continue
+        if c == 124:
+            if peek_byte(st, 1) == 124:
+                st = bump(st)
+                st = bump(st)
+                st = emit(st, TK_OROR(), 0, "")
+            else:
+                st = emit(st, TK_ERROR(), 0, "unexpected character '|' (did you mean '||' or 'or'?)")
+                st.error = 1
+                break
+            continue
+        st = emit(st, TK_ERROR(), 0, "unexpected character in input")
+        st.error = 1
+        break
+
+    if st.error == 0:
+        # final NEWLINE, pending DEDENTs, then EOF
+        n = st.kinds.len
+        if n == 0 or tk_kind(st, n - 1) != TK_NEWLINE():
+            st = emit(st, TK_NEWLINE(), 0, "")
+        while st.indents.len > 1:
+            st.indents = vec_pop(st.indents)
+            st = emit(st, TK_DEDENT(), 0, "")
+        st = emit(st, TK_EOF(), 0, "")
+
+    return st
+
+# the token-kind printer used by the demo / tests
+def kind_name(k: int) -> string:
+    if k == TK_EOF():
+        return "EOF"
+    if k == TK_IDENT():
+        return "IDENT"
+    if k == TK_INT():
+        return "INT"
+    if k == TK_FLOAT():
+        return "FLOAT"
+    if k == TK_STR():
+        return "STR"
+    if k == TK_FSTR():
+        return "FSTR"
+    if k == TK_DEF():
+        return "DEF"
+    if k == TK_STRUCT():
+        return "STRUCT"
+    if k == TK_EXTERN():
+        return "EXTERN"
+    if k == TK_IMPORT():
+        return "IMPORT"
+    if k == TK_IF():
+        return "IF"
+    if k == TK_ELIF():
+        return "ELIF"
+    if k == TK_ELSE():
+        return "ELSE"
+    if k == TK_WHILE():
+        return "WHILE"
+    if k == TK_FOR():
+        return "FOR"
+    if k == TK_IN():
+        return "IN"
+    if k == TK_BREAK():
+        return "BREAK"
+    if k == TK_CONTINUE():
+        return "CONTINUE"
+    if k == TK_RETURN():
+        return "RETURN"
+    if k == TK_PASS():
+        return "PASS"
+    if k == TK_AND():
+        return "AND"
+    if k == TK_OR():
+        return "OR"
+    if k == TK_NOT():
+        return "NOT"
+    if k == TK_TRUE():
+        return "TRUE"
+    if k == TK_FALSE():
+        return "FALSE"
+    if k == TK_TYINT():
+        return "TYINT"
+    if k == TK_TYFLOAT():
+        return "TYFLOAT"
+    if k == TK_TYBOOL():
+        return "TYBOOL"
+    if k == TK_TYSTRING():
+        return "TYSTRING"
+    if k == TK_TYVOID():
+        return "TYVOID"
+    if k == TK_NEWLINE():
+        return "NEWLINE"
+    if k == TK_INDENT():
+        return "INDENT"
+    if k == TK_DEDENT():
+        return "DEDENT"
+    if k == TK_LPAREN():
+        return "LPAREN"
+    if k == TK_RPAREN():
+        return "RPAREN"
+    if k == TK_LBRACKET():
+        return "LBRACKET"
+    if k == TK_RBRACKET():
+        return "RBRACKET"
+    if k == TK_DOT():
+        return "DOT"
+    if k == TK_COMMA():
+        return "COMMA"
+    if k == TK_COLON():
+        return "COLON"
+    if k == TK_ARROW():
+        return "ARROW"
+    if k == TK_ASSIGN():
+        return "ASSIGN"
+    if k == TK_EQ():
+        return "EQ"
+    if k == TK_NE():
+        return "NE"
+    if k == TK_LT():
+        return "LT"
+    if k == TK_LE():
+        return "LE"
+    if k == TK_GT():
+        return "GT"
+    if k == TK_GE():
+        return "GE"
+    if k == TK_ANDAND():
+        return "ANDAND"
+    if k == TK_OROR():
+        return "OROR"
+    if k == TK_PLUS():
+        return "PLUS"
+    if k == TK_MINUS():
+        return "MINUS"
+    if k == TK_STAR():
+        return "STAR"
+    if k == TK_SLASH():
+        return "SLASH"
+    if k == TK_PERCENT():
+        return "PERCENT"
+    if k == TK_BANG():
+        return "BANG"
+    if k == TK_ERROR():
+        return "ERROR"
+    return "?"
+

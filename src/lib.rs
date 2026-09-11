@@ -1,4 +1,4 @@
-﻿//! Axon compiler pipeline: lex -> parse -> typecheck -> codegen -> native object -> link.
+﻿//! Aoxn compiler pipeline: lex -> parse -> typecheck -> codegen -> native object -> link.
 
 pub mod ast;
 pub mod codegen;
@@ -58,12 +58,12 @@ pub fn diag_to_string(d: &Diag) -> String {
     format!("[{}] {}{}", d.stage, loc, d.message)
 }
 
-/// Full compile pipeline from Axon source text to a native object file.
+/// Full compile pipeline from Aoxn source text to a native object file.
 pub fn compile_to_object(src: &str, obj_path: &Path, opt: bool) -> Result<(), Vec<Diag>> {
     compile_sources_to_object(&[src.to_string()], obj_path, opt)
 }
 
-/// Compile multiple Axon sources as one program (merged namespace).
+/// Compile multiple Aoxn sources as one program (merged namespace).
 pub fn compile_sources_to_object(sources: &[String], obj_path: &Path, opt: bool) -> Result<(), Vec<Diag>> {
     let program = parse_sources(sources)?;
     finish_to_object(program, obj_path, opt)
@@ -76,7 +76,7 @@ pub fn compile_paths_to_object(paths: &[String], obj_path: &Path, opt: bool) -> 
     finish_to_object(program, obj_path, opt)
 }
 
-/// Full compile pipeline from Axon source text to LLVM IR text (for `axon ir`).
+/// Full compile pipeline from Aoxn source text to LLVM IR text (for `Aoxn ir`).
 pub fn compile_to_ir(src: &str, opt: bool) -> Result<String, Vec<Diag>> {
     compile_sources_to_ir(&[src.to_string()], opt)
 }
@@ -244,9 +244,9 @@ fn resolve_import(dir: &Path, import: &str) -> PathBuf {
 }
 
 /// Locate the clang driver used for final linking.
-/// Order: AXON_CLANG env -> PATH -> repo-local LLVM -> standard install dir.
+/// Order: AOXN_CLANG env -> PATH -> repo-local LLVM -> standard install dir.
 pub fn find_clang() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("AXON_CLANG") {
+    if let Ok(p) = std::env::var("AOXN_CLANG") {
         let path = PathBuf::from(p);
         if path.is_file() {
             return Some(path);
@@ -280,7 +280,7 @@ fn which(name: &str) -> Option<PathBuf> {
     None
 }
 
-/// Compile Axon source files to an executable at `exe_path` (links via clang).
+/// Compile Aoxn source files to an executable at `exe_path` (links via clang).
 pub fn build_exe(src: &str, exe_path: &Path, opt: bool) -> Result<(), Vec<Diag>> {
     build_sources_exe(&[src.to_string()], exe_path, opt)
 }
@@ -330,7 +330,7 @@ pub fn link_opts(obj_path: &Path, exe_path: &Path, libs: &[String], lib_paths: &
         file: u32::MAX,
         line: 0,
         col: 0,
-        message: "cannot find clang for linking. Set AXON_CLANG to the clang executable \
+        message: "cannot find clang for linking. Set AOXN_CLANG to the clang executable \
                   or add LLVM's bin directory to PATH."
             .into(),
     }])?;
@@ -366,4 +366,6 @@ pub fn link_opts(obj_path: &Path, exe_path: &Path, libs: &[String], lib_paths: &
     }
     Ok(())
 }
+
+
 

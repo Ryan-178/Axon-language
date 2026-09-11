@@ -1,4 +1,4 @@
-//! Raw FFI bindings to the LLVM-C API (LLVM-C.lib / LLVM-C.dll).
+﻿//! Raw FFI bindings to the LLVM-C API (LLVM-C.lib / LLVM-C.dll).
 //! Hand-written thin layer: no heavyweight bindings crates.
 //! Every declaration here must match the LLVM C API exactly.
 
@@ -151,3 +151,4 @@ extern "C" {
     pub fn LLVMRunPasses(m: LLVMModuleRef, passes: *const c_char, tm: LLVMTargetMachineRef, options: *mut ()) -> *mut c_char;
     pub fn LLVMDisposePassBuilderOptions(opts: *mut ());
 }
+

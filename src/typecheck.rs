@@ -1,4 +1,4 @@
-﻿//! Axon type checker: strict, no implicit conversions, deterministic errors.
+﻿//! Aoxn type checker: strict, no implicit conversions, deterministic errors.
 //! Generic functions are monomorphized at call sites: arguments are unified
 //! against the declared param types (T / length N), a concrete instance is
 //! cloned+substituted, queued for checking, and codegen receives the instance.
@@ -234,6 +234,9 @@ pub fn check(program: &Program) -> Result<CheckOutput, Diag> {
 
 impl<'a> Tc<'a> {
     fn check_fn_body(&mut self, f: &FnDecl) -> Result<(), Diag> {
+        if std::env::var("AOXN_TC_TRACE").is_ok() {
+            eprintln!("[tc] {}", f.name);
+        }
         let mut scopes: Vec<(String, Type)> =
             f.params.iter().map(|p| (p.name.clone(), p.ty.clone())).collect();
         let returns_all = self.check_block(&f.body, f, &mut scopes, 0)?;
@@ -1489,30 +1492,44 @@ fn collect_structs(decls: &[StructDecl]) -> Result<StructTable, Diag> {
         table.insert(s.name.clone(), fields);
     }
 
-    // pass 3: reject recursive structs (they would have infinite size)
-    for s in decls {
-        let mut stack: Vec<String> = vec![s.name.clone()];
-        let mut seen: Vec<String> = vec![s.name.clone()];
-        while let Some(name) = stack.pop() {
-            if let Some(fields) = table.get(&name) {
-                for (_, t) in fields {
-                    if let Type::Struct(inner) = t {
-                        if seen.contains(inner) {
-                            return Err(Diag {
-                                stage: "type", file: s.pos.file,
-                                line: s.pos.line,
-                                col: s.pos.col,
-                                message: format!(
-                                    "recursive struct '{}' (a struct cannot contain itself, directly or indirectly)",
-                                    s.name
-                                ),
-                            });
-                        }
-                        seen.push(inner.clone());
-                        stack.push(inner.clone());
+    // pass 3: reject recursive structs (they would have infinite size).
+    // Proper DFS with gray/black marking: a struct appearing in multiple
+    // sibling fields is fine; only a struct on the current path is a cycle.
+    fn cycles(name: &str, table: &StructTable, gray: &mut HashSet<String>, black: &mut HashSet<String>) -> Option<String> {
+        if black.contains(name) {
+            return None;
+        }
+        if gray.contains(name) {
+            return Some(name.to_string());
+        }
+        gray.insert(name.to_string());
+        if let Some(fields) = table.get(name) {
+            for (_, t) in fields {
+                if let Type::Struct(inner) = t {
+                    if let Some(c) = cycles(inner, table, gray, black) {
+                        return Some(c);
                     }
                 }
             }
+        }
+        gray.remove(name);
+        black.insert(name.to_string());
+        None
+    }
+
+    for s in decls {
+        let mut gray: HashSet<String> = HashSet::new();
+        let mut black: HashSet<String> = HashSet::new();
+        if cycles(&s.name, &table, &mut gray, &mut black).is_some() {
+            return Err(Diag {
+                stage: "type", file: s.pos.file,
+                line: s.pos.line,
+                col: s.pos.col,
+                message: format!(
+                    "recursive struct '{}' (a struct cannot contain itself, directly or indirectly)",
+                    s.name
+                ),
+            });
         }
     }
 
@@ -1600,6 +1617,8 @@ fn op_str(op: BinOp) -> &'static str {
         Or => "||",
     }
 }
+
+
 
 
 

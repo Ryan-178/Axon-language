@@ -1,6 +1,6 @@
-# Axon Language Specification (v0.9)
+﻿# Aoxn Language Specification (v0.9)
 
-Axon is an AI-native, statically typed, ahead-of-time compiled language with a
+Aoxn is an AI-native, statically typed, ahead-of-time compiled language with a
 Python-style syntax. Design goals: minimal syntax, explicit semantics, native
 (C++-class) speed via LLVM, self-hosting core libraries, and machine-friendly
 tooling (JSON diagnostics, dumpable IR).
@@ -11,7 +11,7 @@ tooling (JSON diagnostics, dumpable IR).
   a tab counts as 4 columns.
 - Statements end at a line break; no semicolons. `;` is a syntax error.
 - `#` starts a comment (to end of line). Blank and comment-only lines are ignored.
-- Inside `(...)` a line break is ignored (implicit line joining) — call
+- Inside `(...)` a line break is ignored (implicit line joining) 鈥?call
   arguments may span lines, trailing commas allowed.
 - A single simple statement may follow `:` on the same line
   (`if n < 2: return n`). Compound statements (if/while/def) cannot.
@@ -29,12 +29,12 @@ tooling (JSON diagnostics, dumpable IR).
 | `Name`   | struct (see below)       | named %struct |
 
 No implicit conversions. `int` and `float` never mix silently; `%` is int-only.
-Integer division by zero is undefined (native crash, no runtime check — speed
+Integer division by zero is undefined (native crash, no runtime check 鈥?speed
 first, matching C/C++). Array indexing is **unchecked** (C-style).
 
 ## Arrays
 
-```axon
+```Aoxn
 a = [10, 20, 30]              # inferred [int; 3]
 xs: [int; 4] = [1, 2, 3, 4]   # annotated
 m: [[int; 2]; 3] = [[1, 2], [3, 4], [5, 6]]   # nested
@@ -50,7 +50,7 @@ print(len(a))                 # 3 (compile-time constant)
 
 ## Structs
 
-```axon
+```Aoxn
 struct Point:
     x: int
     y: int
@@ -69,7 +69,7 @@ d = p.x + p.y           # field access
 
 ## Strings
 
-```axon
+```Aoxn
 s = "hello" + ", " + "world"   # concatenation (runtime malloc + memcpy)
 print(s)                       # hello, world
 print(len(s))                  # 12 (bytes)
@@ -81,15 +81,15 @@ print("apple" < "banana")      # true (byte-wise lexicographic)
 - All six comparison operators work on `(string, string)` via byte-wise
   `strcmp` semantics; `len(s)` is the byte length.
 - Strings are **immutable**. Literals live in static storage; concatenation
-  results are heap-allocated and intentionally not freed (no GC yet — safe
+  results are heap-allocated and intentionally not freed (no GC yet 鈥?safe
   because strings never mutate, so sharing/aliasing is sound).
 - Strings may appear in struct fields, array elements, parameters, and
   returns; copies share the underlying bytes (safe: immutability).
-- No string indexing yet (returns no `char` type — roadmap).
+- No string indexing yet (returns no `char` type 鈥?roadmap).
 
 ## Loops
 
-```axon
+```Aoxn
 while cond:
     ...
 
@@ -111,9 +111,9 @@ for x in arr:                 # iterate array elements (each copied into x)
 
 ## f-strings
 
-```axon
-name = "axon"
-print(f"hello {name}, {1 + 2}, {True}")   # hello axon, 3, true
+```Aoxn
+name = "Aoxn"
+print(f"hello {name}, {1 + 2}, {True}")   # hello Aoxn, 3, true
 print(f"braces: {{literal}}")             # braces: {literal}
 ```
 
@@ -126,7 +126,7 @@ print(f"braces: {{literal}}")             # braces: {literal}
 
 ## Generic functions
 
-```axon
+```Aoxn
 def sort[T, N](arr: [T; N]) -> [T; N]:
     result = arr
     for i in range(N):
@@ -146,7 +146,7 @@ sort(["b", "a"])      # T = string, N = 2
   `[...]` after the function name. At most one length parameter per function.
 - Monomorphization: every distinct (type, length) combination at a call site
   produces a dedicated instance at compile time; arguments are unified
-  against the declared parameter types (inferred — no explicit type
+  against the declared parameter types (inferred 鈥?no explicit type
   arguments).
 - The length parameter is a compile-time `int` constant inside the body
   (`range(N)`, `N - 1`).
@@ -159,7 +159,7 @@ sort(["b", "a"])      # T = string, N = 2
 Assignment, parameter passing, and returns **copy** the whole value (lowered
 to memcpy). There are no references or pointers yet:
 
-```axon
+```Aoxn
 b = a          # b is an independent copy
 b[0] = 99      # does not change a
 data: [int; 50000] = [0] * 50000    # Python-style replication
@@ -170,7 +170,7 @@ data: [int; 50000] = [0] * 50000    # Python-style replication
 A program is a list of `import`, `struct`, `def`, and `extern def`
 declarations; execution starts at `main`.
 
-```axon
+```Aoxn
 import "../stdlib/stdlib.ax"    # resolved relative to the importing file
 
 extern def sqrt(x: float) -> float    # C runtime function (FFI), no body
@@ -186,15 +186,15 @@ def main() -> int:
 - **Imports** load another `.ax` file and merge it into one namespace.
   Paths resolve relative to the importing file; each file is included
   exactly once (canonical path); circular imports are compile errors.
-  `axon run main.ax` alone is enough — imports pull in dependencies.
-- Multiple entry files on the command line (`axon build a.ax b.ax`) are also
+  `Aoxn run main.ax` alone is enough 鈥?imports pull in dependencies.
+- Multiple entry files on the command line (`Aoxn build a.ax b.ax`) are also
   merged, with import resolution applied to each.
 
 `main` returns `int` (process exit code) or `void` (exit 0).
 
 ## Bindings
 
-```axon
+```Aoxn
 x = 5               # inferred: int
 x: int = 10         # annotated (Python-style); annotation must match
 x = x + 5           # re-assignment keeps the declared type
@@ -208,7 +208,7 @@ x = x + 5           # re-assignment keeps the declared type
 
 ## Functions
 
-```axon
+```Aoxn
 def fib(n: int) -> int:
     if n < 2:
         return n
@@ -222,10 +222,10 @@ def fib(n: int) -> int:
 
 ## Statements
 
-- `if cond:` / `elif cond:` / `else:` — conditions must be `bool`.
-- `while cond:` — the only loop (no `for` yet).
+- `if cond:` / `elif cond:` / `else:` 鈥?conditions must be `bool`.
+- `while cond:` 鈥?the only loop (no `for` yet).
 - `return` / `return expr`.
-- `pass` — explicit empty statement.
+- `pass` 鈥?explicit empty statement.
 
 ## Expressions
 
@@ -254,53 +254,53 @@ primary := INT | FLOAT | STRING | True | False
 
 ## Builtins
 
-- `print(expr)` — one `int`, `float`, `bool`, or `string` (no arrays/structs);
+- `print(expr)` 鈥?one `int`, `float`, `bool`, or `string` (no arrays/structs);
   prints a trailing newline. Floats print with `%f` (6 decimals).
-- `len(x)` — array: static length; string: byte length. Returns `int`.
-- `str(x)` — convert `int`/`float`/`bool`/`string` to `string`.
+- `len(x)` 鈥?array: static length; string: byte length. Returns `int`.
+- `str(x)` 鈥?convert `int`/`float`/`bool`/`string` to `string`.
 
 ## Raw memory (unsafe, for the standard library and systems code)
 
 Addresses are plain `int` (pointer-sized). These builtins are the escape
 hatch that lets the standard library implement growable containers and file
-IO in Axon itself; they perform no checks.
+IO in Aoxn itself; they perform no checks.
 
 - `load_i64(addr) -> int`, `store_i64(addr, v: int)`
 - `load_f64(addr) -> float`, `store_f64(addr, v: float)`
-- `load_u8(base, off) -> int`, `store_u8(base, off, v: int)` — `base` may be
+- `load_u8(base, off) -> int`, `store_u8(base, off, v: int)` 鈥?`base` may be
   an `int` address or a `string` (byte access into the string)
-- `as_string(p: int) -> string`, `as_ptr(s: string) -> int` — pointer
+- `as_string(p: int) -> string`, `as_ptr(s: string) -> int` 鈥?pointer
   reinterpretation
 
 The stdlib builds on these: `struct Vec` (growable 8-byte slots:
-`vec_new`/`vec_push`/`vec_get`/`vec_set`/`vec_free` — write-back style,
+`vec_new`/`vec_push`/`vec_get`/`vec_set`/`vec_free` 鈥?write-back style,
 `v = vec_push(v, x)`), byte buffers, `read_file`/`write_file`, and
 `system(cmd)` for process spawning.
 
 ## Tooling contract (AI-native)
 
-- `axon build file.ax [-o out] [--O0]` — native executable (LLVM O3 default).
-- `axon run file.ax [-- args...]` — compile and run.
-- `axon ir file.ax` — print the optimized LLVM IR.
-- `--json` — diagnostics as `{"ok":false,"errors":[{"stage","line","col","message"}]}`.
-- `AXON_DUMP_IR=1` — dump unoptimized IR to stderr before verification.
+- `Aoxn build file.ax [-o out] [--O0]` 鈥?native executable (LLVM O3 default).
+- `Aoxn run file.ax [-- args...]` 鈥?compile and run.
+- `Aoxn ir file.ax` 鈥?print the optimized LLVM IR.
+- `--json` 鈥?diagnostics as `{"ok":false,"errors":[{"stage","line","col","message"}]}`.
+- `AOXN_DUMP_IR=1` 鈥?dump unoptimized IR to stderr before verification.
 
 Diagnostics stages: `lex`, `parse`, `type`, `internal`, `link`, `io`.
 
 ## Performance
 
-Axon compiles through LLVM O3 to native machine code — measured at parity
+Aoxn compiles through LLVM O3 to native machine code 鈥?measured at parity
 with `clang -O3` on identical algorithms (see `examples/bench_*.ax`):
 loop sum, array scan, struct copies, for-loop iteration, and string
-build/compare all land within ±15% of clang.
+build/compare all land within 卤15% of clang.
 
 ## Standard library
 
-`stdlib/stdlib.ax` is written **in Axon itself** and compiled together with
+`stdlib/stdlib.ax` is written **in Aoxn itself** and compiled together with
 the program: math (`abs/min/max/clamp/pow_i/gcd/lcm/isqrt/is_prime/hypot`
 + `sqrt`/`floor`/`ceil` via FFI), and generic search/sort/aggregation:
 `sort`, `linear_search`, `binary_search`, `max_of`, `min_of`, `reverse`,
-`sum_int`, `sum_float` — all parameterized by element type and length.
+`sum_int`, `sum_float` 鈥?all parameterized by element type and length.
 
 ## Roadmap
 
@@ -308,6 +308,7 @@ the program: math (`abs/min/max/clamp/pow_i/gcd/lcm/isqrt/is_prime/hypot`
 2. String indexing / iteration (needs a `char` type or substring slices).
 3. Format specifiers in f-strings (`{x:.2f}`); f-string multi-line.
 4. Memory: string interning or arena freeing (currently concatenation leaks).
-5. Self-hosting: rewrite the compiler in Axon.
-6. Standard library expansion: containers, IO, crypto (保密性).
+5. Self-hosting: rewrite the compiler in Aoxn.
+6. Standard library expansion: containers, IO, crypto (淇濆瘑鎬?.
 7. Top-level statements as an implicit `main` (module-script mode).
+

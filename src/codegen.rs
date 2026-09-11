@@ -1,4 +1,4 @@
-//! Axon code generator: typed AST -> LLVM IR via C API -> native object file.
+﻿//! Aoxn code generator: typed AST -> LLVM IR via C API -> native object file.
 
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
@@ -90,7 +90,7 @@ struct Gen {
 impl Gen {
     unsafe fn create() -> Gen {
         let ctx = LLVMContextCreate();
-        let module_name = CString::new("axon_module").unwrap();
+        let module_name = CString::new("AOXN_module").unwrap();
         let module = LLVMModuleCreateWithNameInContext(module_name.as_ptr(), ctx);
         let builder = LLVMCreateBuilderInContext(ctx);
         Gen {
@@ -235,7 +235,7 @@ impl Gen {
     // ---- module assembly ----
 
     unsafe fn build_module(&mut self, program: &Program, opt: bool) -> Result<(), String> {
-        // C runtime entry first so the user's `main` gets the internal name `axon.main`.
+        // C runtime entry first so the user's `main` gets the internal name `Aoxn.main`.
         let main_i32 = LLVMFunctionType(self.i32, std::ptr::null_mut(), 0, 0);
         let wrapper_name = self.cstr("main");
         let wrapper = LLVMAddFunction(self.module, wrapper_name.as_ptr(), main_i32);
@@ -271,7 +271,7 @@ impl Gen {
             let mut param_tys: Vec<LLVMTypeRef> = f.params.iter().map(|p| self.ty_of(&p.ty)).collect();
             let ret_ty = self.ty_of(&f.ret);
             let fn_ty = LLVMFunctionType(ret_ty, param_tys.as_mut_ptr(), param_tys.len() as u32, 0);
-            let internal = if f.name == "main" { "axon.main" } else { f.name.as_str() };
+            let internal = if f.name == "main" { "aoxn.main" } else { f.name.as_str() };
             let name = self.cstr(internal);
             let ref_ = LLVMAddFunction(self.module, name.as_ptr(), fn_ty);
             // extern declarations get no entry block (no body will be emitted)
@@ -284,6 +284,9 @@ impl Gen {
 
         // emit bodies
         for f in &program.funcs {
+            if std::env::var("AOXN_CG_TRACE").is_ok() {
+                eprintln!("[cg] {}", f.name);
+            }
             if f.is_extern {
                 continue; // body lives in the C runtime; declaration is enough
             }
@@ -318,7 +321,7 @@ impl Gen {
             }
         }
 
-        // wrapper body: call axon.main, return exit code
+        // wrapper body: call Aoxn.main, return exit code
         if !program.funcs.iter().any(|f| f.name == "main") {
             return Err("internal error: main missing at codegen".into());
         }
@@ -350,7 +353,7 @@ impl Gen {
         }
 
         // verify
-        if std::env::var("AXON_DUMP_IR").is_ok() {
+        if std::env::var("AOXN_DUMP_IR").is_ok() {
             let ir_c = LLVMPrintModuleToString(self.module);
             eprintln!("{}", CStr::from_ptr(ir_c).to_string_lossy());
             LLVMDisposeMessage(ir_c);
@@ -415,7 +418,7 @@ impl Gen {
         Ok(())
     }
 
-    /// `for var in range(...)` / `for var in array:` — start/end/step and the
+    /// `for var in range(...)` / `for var in array:` 鈥?start/end/step and the
     /// array pointer are evaluated once at loop entry (Python semantics).
     unsafe fn emit_for(
         &mut self,
@@ -430,7 +433,7 @@ impl Gen {
         // loop variable type + iteration source
         let (start, end, step, var_ty, arr_info) = match iter {
             ForIter::Range(args) => {
-                // range(n) → 0..n · range(a, b) → a..b · range(a, b, step)
+                // range(n) 鈫?0..n 路 range(a, b) 鈫?a..b 路 range(a, b, step)
                 let (s, e, st) = match args.len() {
                     1 => {
                         let (e, _) = self.emit_expr(&args[0], locals)?;
@@ -722,8 +725,7 @@ impl Gen {
     }
 
     /// address of an aggregate-valued expression, materializing it into
-    /// memory only when needed. Avoids giant SSA aggregate load/stores —
-    /// those choke the optimizer (SROA) on large arrays.
+    /// memory only when needed. Avoids giant SSA aggregate load/stores 鈥?    /// those choke the optimizer (SROA) on large arrays.
     unsafe fn emit_aggregate_ptr(&mut self, expr: &Expr, locals: &mut Locals) -> Result<(LLVMValueRef, Type), String> {
         match expr {
             Expr::ArrayRep { elem, count, lit_id, .. } => {
@@ -1507,3 +1509,5 @@ impl Gen {
         Ok((phi, Type::Bool))
     }
 }
+
+

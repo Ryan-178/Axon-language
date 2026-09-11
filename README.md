@@ -1,10 +1,10 @@
-﻿# Axon
+﻿# Aoxn
 
-**Axon** is an AI-native, statically typed, ahead-of-time compiled programming
+**Aoxn** is an AI-native, statically typed, ahead-of-time compiled programming
 language. Python-style syntax on the surface, C++-class native performance
 underneath: programs compile through LLVM (O3) straight to machine code.
 
-```axon
+```Aoxn
 def sort[T, N](arr: [T; N]) -> [T; N]:      # generic, monomorphized
     result = arr
     for i in range(N):
@@ -22,7 +22,7 @@ def main() -> int:
     return 0
 ```
 
-## Why Axon
+## Why Aoxn
 
 - **Python-style syntax** 鈥?indentation blocks, `def` / `elif` / `pass`,
   `#` comments, `x = 5` type inference, `and` / `or` / `not`, `[0] * n`
@@ -31,7 +31,7 @@ def main() -> int:
 - **Generics** 鈥?`def sort[T, N](arr: [T; N])` monomorphized per call site;
   no boxing, no runtime overhead
 - **AI-native tooling** 鈥?every diagnostic can be emitted as structured JSON
-  (`--json`), the optimized IR is dumpable (`axon ir`), and the semantics are
+  (`--json`), the optimized IR is dumpable (`Aoxn ir`), and the semantics are
   deliberately strict and deterministic so AI-generated code is verifiable
 - **Value semantics** 鈥?arrays, structs, and strings copy by value; no hidden
   references; array indexing is unchecked, C-style
@@ -39,7 +39,7 @@ def main() -> int:
 ## Quick start
 
 Prerequisites (Windows): Rust (msvc host), LLVM (C API), clang, MSVC Build
-Tools. `build.rs` locates LLVM automatically (`AXON_LLVM_DIR` overrides).
+Tools. `build.rs` locates LLVM automatically (`AOXN_LLVM_DIR` overrides).
 
 ```powershell
 cargo build
@@ -59,7 +59,7 @@ diagnostics; `--O0` disables optimization.
 
 ## Language tour
 
-```axon
+```Aoxn
 # arrays, structs, strings 鈥?all value types
 struct Particle:
     x: float
@@ -93,13 +93,13 @@ the guarantees are simple enough for a machine to reason about.
 Same-algorithm comparisons against `clang -O3` on the same machine (warm
 runs, best of 3):
 
-| Benchmark | Scale | Axon | clang C++ |
+| Benchmark | Scale | Aoxn | clang C++ |
 |---|---|---|---|
 | Loop sum | 2脳10鈦?iterations | ~15 ms | ~23 ms |
 | Array fill + scan | 2脳10鈦?reads | 86 ms | 99 ms |
 | Struct copies (by value) | 7.5脳10鈦?copies | 237 ms | 206 ms |
 
-Native code is native code 鈥?Axon sits within noise of clang.
+Native code is native code 鈥?Aoxn sits within noise of clang.
 
 ## Project layout
 
@@ -107,14 +107,14 @@ Native code is native code 鈥?Axon sits within noise of clang.
 |---|---|
 | `src/` | the compiler: lexer 鈫?parser 鈫?typecheck 鈫?LLVM codegen 鈫?clang link |
 | `src/llvm.rs` | hand-written LLVM-C FFI (no inkwell/llvm-sys) |
-| `stdlib/stdlib.ax` | the standard library, written in Axon itself (generics) |
+| `stdlib/stdlib.ax` | the standard library, written in Aoxn itself (generics) |
 | `examples/*.ax` | demo programs (hello, fib, primes, vectors, strings, benchmarks, stdlib_demo) |
 | `tests/pipeline.rs` | 70 end-to-end tests: compile 鈫?run 鈫?verify output |
 | `docs/spec.md` | full language specification and roadmap |
 
 ## Self-hosting
 
-Axon driving LLVM-C from inside Axon (first brick of self-hosting): see
+Aoxn driving LLVM-C from inside Aoxn (first brick of self-hosting): see
 examples/ffi_llvm.ax and the full assessment in
 [docs/selfhost.md](docs/selfhost.md).
 
@@ -122,7 +122,7 @@ examples/ffi_llvm.ax and the full assessment in
 
 v0.7 路 Windows-first 路 70/70 tests green 路 CI on every push.
 
-Roadmap: import/module system 鈫?self-hosting (compiler rewritten in Axon).
+Roadmap: import/module system 鈫?self-hosting (compiler rewritten in Aoxn).
 
 See [`docs/spec.md`](docs/spec.md) for the complete language specification
 and [`CHANGELOG.md`](CHANGELOG.md) for the release history.
@@ -130,4 +130,5 @@ and [`CHANGELOG.md`](CHANGELOG.md) for the release history.
 ## License
 
 Apache-2.0 鈥?see [`LICENSE`](LICENSE).
+
 

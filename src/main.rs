@@ -1,15 +1,15 @@
-//! Axon compiler driver.
+﻿//! Aoxn compiler driver.
 //!
 //! Usage:
-//!   axon build <file.ax> [-o out.exe] [--O0] [--json]
-//!   axon run   <file.ax> [args...] [--O0] [--json]
-//!   axon ir    <file.ax> [--O0] [--json]
-//!   axon --help
+//!   Aoxn build <file.ax> [-o out.exe] [--O0] [--json]
+//!   Aoxn run   <file.ax> [args...] [--O0] [--json]
+//!   Aoxn ir    <file.ax> [--O0] [--json]
+//!   Aoxn --help
 
 use std::path::PathBuf;
 use std::process::Command;
 
-use axon::Diag;
+use aoxn::Diag;
 
 struct Opts {
     out: Option<String>,
@@ -82,7 +82,7 @@ fn main() {
         "run" => cmd_run(&args[1..]),
         "ir" => cmd_ir(&args[1..]),
         other => {
-            eprintln!("error: unknown command '{other}' (try: axon --help)");
+            eprintln!("error: unknown command '{other}' (try: Aoxn --help)");
             std::process::exit(2);
         }
     }
@@ -90,11 +90,11 @@ fn main() {
 
 fn print_help() {
     println!(
-        "Axon compiler v{}\n\n\
+        "Aoxn compiler v{}\n\n\
          USAGE:\n  \
-         axon build <file.ax> [-o out] [--O0] [--json]   compile to a native executable\n  \
-         axon run <file.ax> [--O0] [--json] [-- args...]  compile and run in one step\n  \
-         axon ir <file.ax> [--O0] [--json]               print the LLVM IR\n\n\
+         Aoxn build <file.ax> [-o out] [--O0] [--json]   compile to a native executable\n  \
+         Aoxn run <file.ax> [--O0] [--json] [-- args...]  compile and run in one step\n  \
+         Aoxn ir <file.ax> [--O0] [--json]               print the LLVM IR\n\n\
          FLAGS:\n  \
          -o <path>   output executable path (default: <file>.exe)\n  \
          --O0        disable optimizations (default: O3)\n  \
@@ -105,10 +105,10 @@ fn print_help() {
 
 fn report(diags: &[Diag], json: bool) {
     if json {
-        eprintln!("{}", axon::diags_to_json(diags));
+        eprintln!("{}", aoxn::diags_to_json(diags));
     } else {
         for d in diags {
-            eprintln!("{}", axon::diag_to_string(d));
+            eprintln!("{}", aoxn::diag_to_string(d));
         }
     }
 }
@@ -116,12 +116,12 @@ fn report(diags: &[Diag], json: bool) {
 fn cmd_build(args: &[String]) {
     let opts = parse_opts(args);
     if opts.positional.is_empty() {
-        eprintln!("error: 'axon build' needs an input file (.ax)");
+        eprintln!("error: 'Aoxn build' needs an input file (.ax)");
         std::process::exit(2);
     }
     // the first file is the entry; `import "..."` pulls in the rest
     let exe = opts.out.map(PathBuf::from).unwrap_or_else(|| default_exe(&opts.positional[0]));
-    match axon::build_paths_opts(&opts.positional, &exe, !opts.o0, &opts.libs, &opts.lib_paths) {
+    match aoxn::build_paths_opts(&opts.positional, &exe, !opts.o0, &opts.libs, &opts.lib_paths) {
         Ok(()) => println!("{}", exe.display()),
         Err(diags) => {
             report(&diags, opts.json);
@@ -133,13 +133,13 @@ fn cmd_build(args: &[String]) {
 fn cmd_run(args: &[String]) {
     let opts = parse_opts(args);
     if opts.positional.is_empty() {
-        eprintln!("error: 'axon run' needs an input file (.ax)");
+        eprintln!("error: 'Aoxn run' needs an input file (.ax)");
         std::process::exit(2);
     }
     // program args: anything after "--"
     let prog_args = &opts.passthrough;
     let exe = temp_exe(&opts.positional[0]);
-    if let Err(diags) = axon::build_paths_opts(&opts.positional, &exe, !opts.o0, &opts.libs, &opts.lib_paths) {
+    if let Err(diags) = aoxn::build_paths_opts(&opts.positional, &exe, !opts.o0, &opts.libs, &opts.lib_paths) {
         report(&diags, opts.json);
         std::process::exit(1);
     }
@@ -157,10 +157,10 @@ fn cmd_run(args: &[String]) {
 fn cmd_ir(args: &[String]) {
     let opts = parse_opts(args);
     if opts.positional.is_empty() {
-        eprintln!("error: 'axon ir' needs an input file (.ax)");
+        eprintln!("error: 'Aoxn ir' needs an input file (.ax)");
         std::process::exit(2);
     }
-    match axon::compile_paths_to_ir(&opts.positional, !opts.o0) {
+    match aoxn::compile_paths_to_ir(&opts.positional, !opts.o0) {
         Ok(ir) => print!("{ir}"),
         Err(diags) => {
             report(&diags, opts.json);
@@ -180,8 +180,11 @@ fn temp_exe(input: &str) -> PathBuf {
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "program".into());
-    let dir = std::env::temp_dir().join("axon-run");
+    let dir = std::env::temp_dir().join("Aoxn-run");
     let _ = std::fs::create_dir_all(&dir);
     let unique = format!("{stem}-{}.exe", std::process::id());
     dir.join(unique)
 }
+
+
+

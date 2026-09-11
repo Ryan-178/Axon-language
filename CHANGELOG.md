@@ -1,7 +1,26 @@
-# Changelog
+﻿# Changelog
 
-Notable changes to the Axon compiler and language. Axon follows semver-ish
+Notable changes to the Aoxn compiler and language. Aoxn follows semver-ish
 minor bumps while pre-1.0: each minor version is a language milestone.
+
+## [0.10.0] - 2026-09-06
+
+### Changed
+- **Project renamed: Axon → Aoxn** (crate, binary, docs, examples).
+
+### Added
+- **Self-hosting stage 1: the Aoxn lexer written in Aoxn**
+  (`selfhost/lexer.ax`, ~770 lines) — a faithful port of the Rust lexer:
+  Python-style layout (NEWLINE/INDENT/DEDENT with an indent stack), comments,
+  paren continuation, all operators, string escapes, floats, f-string raw
+  tokens. Verified by an exact token-stream test (`selfhost/lex_demo.ax`).
+- stdlib: `vec_pop`.
+
+### Fixed
+- Struct cycle detection: a struct appearing in multiple sibling fields was
+  falsely reported as recursive; replaced with proper gray/black DFS.
+- Runtime crash in the demo pipeline: an empty indent stack (seed value
+  missing) made `vec_get(stack, -1)` dereference NULL.
 
 ## [0.9.0] - 2026-09-06
 
@@ -17,8 +36,7 @@ minor bumps while pre-1.0: each minor version is a language milestone.
   for process spawning.
 
 ### Fixed
-- Lexer: `>=` was lexed as `>` (a latent bug no earlier test caught —
-  `4 >= 5` is false under both). Added boundary-equality regression tests.
+- Lexer: `>=` was lexed as `>` (a latent bug no earlier test caught 鈥?  `4 >= 5` is false under both). Added boundary-equality regression tests.
 
 ## [0.8.1] - 2026-09-06
 
@@ -26,33 +44,32 @@ minor bumps while pre-1.0: each minor version is a language milestone.
 - `-l NAME` / `-L DIR` link flags: user programs can link arbitrary C
   libraries (LLVM-C, crypto, ...).
 - Self-hosting proof of concept: `examples/ffi_llvm.ax` drives the LLVM-C
-  API from Axon (pointers pass as `int`, ABI-identical on x86-64) and emits
-  real IR — `define i64 @answer() { ret i64 42 }`.
+  API from Aoxn (pointers pass as `int`, ABI-identical on x86-64) and emits
+  real IR 鈥?`define i64 @answer() { ret i64 42 }`.
 - Self-hosting feasibility assessment: `docs/selfhost.md` (capability
   matrix, gap analysis, staged bootstrap plan, verdict: feasible).
 
 ## [0.8.0] - 2026-09-06
 
 ### Added
-- **Import / module system**: `import "../stdlib/stdlib.ax"` — paths resolve
+- **Import / module system**: `import "../stdlib/stdlib.ax"` 鈥?paths resolve
   relative to the importing file; include-once per canonical path; circular
   imports rejected with the full cycle chain.
 - **File-aware diagnostics**: every error now names its source file
   (`[type] stdlib/stdlib.ax:130:20: ...`, also in `--json` output).
-- `axon build / run / ir` are now import-aware — `axon run examples\stdlib_demo.ax`
+- `Aoxn build / run / ir` are now import-aware 鈥?`Aoxn run examples\stdlib_demo.ax`
   alone pulls in the standard library.
 
 ## [0.7.0] - 2026-09-06
 
 ### Added
-- **Generic functions**: `def sort[T, N](arr: [T; N]) -> [T; N]` — type
+- **Generic functions**: `def sort[T, N](arr: [T; N]) -> [T; N]` 鈥?type
   parameters `T` and array-length parameters `N`, monomorphized at every call
   site (deterministic mangled instances like `sort.i.8`).
 - The length parameter is usable as an `int` constant inside generic bodies
   (`range(N)`, `N - 1`).
 - Standard library rewritten with generics: `sort`, `linear_search`,
-  `binary_search`, `max_of`, `min_of`, `reverse`, `sum_int`, `sum_float` —
-  replacing the fixed-size `_8` functions.
+  `binary_search`, `max_of`, `min_of`, `reverse`, `sum_int`, `sum_float` 鈥?  replacing the fixed-size `_8` functions.
 
 ### Fixed
 - Generic declarations no longer reach codegen (a `[T; usize::MAX]` type
@@ -61,10 +78,10 @@ minor bumps while pre-1.0: each minor version is a language milestone.
 ## [0.6.0] - 2026-09-06
 
 ### Added
-- `extern def` — C FFI declarations (bodyless, resolved at link time).
-- Multi-file compilation: `axon build main.ax stdlib/stdlib.ax` merges all
+- `extern def` 鈥?C FFI declarations (bodyless, resolved at link time).
+- Multi-file compilation: `Aoxn build main.ax stdlib/stdlib.ax` merges all
   inputs into one namespace (build / run / ir).
-- `stdlib/stdlib.ax` — the standard library written in Axon itself: math
+- `stdlib/stdlib.ax` 鈥?the standard library written in Aoxn itself: math
   (`abs/min/max/clamp/pow_i/gcd/lcm/isqrt/is_prime/hypot` + `sqrt/floor/ceil`
   via FFI), search, sort.
 - `examples/stdlib_demo.ax`.
@@ -78,7 +95,7 @@ minor bumps while pre-1.0: each minor version is a language milestone.
 - `break` / `continue`.
 - f-strings: `f"hello {name}, {1 + 2}"` with `{{`/`}}` escapes and arbitrary
   expressions; desugars to `"lit" + str(expr) + ...`.
-- `str()` builtin (int → decimal, float → `%f`, bool → `true`/`false`).
+- `str()` builtin (int 鈫?decimal, float 鈫?`%f`, bool 鈫?`true`/`false`).
 
 ### Added (CI)
 - GitHub Actions: windows-latest, winget LLVM, full test suite + smoke test.
@@ -93,7 +110,7 @@ minor bumps while pre-1.0: each minor version is a language milestone.
 
 ### Design
 - Strings are immutable; concatenation results are heap-allocated and never
-  freed (no GC yet — documented behavior).
+  freed (no GC yet 鈥?documented behavior).
 
 ## [0.3.0] - 2026-09-05
 
@@ -107,7 +124,7 @@ minor bumps while pre-1.0: each minor version is a language milestone.
 
 ### Fixed
 - Struct GEP field indices must be i32 constants (LangRef rule).
-- Large aggregates are never materialized as SSA values — `load [50000 x i64]`
+- Large aggregates are never materialized as SSA values 鈥?`load [50000 x i64]`
   made SROA/O3 hang; assignment now goes through memcpy.
 
 ## [0.2.0] - 2026-09-05
@@ -127,9 +144,10 @@ minor bumps while pre-1.0: each minor version is a language milestone.
 
 ### Added
 - Initial compiler in Rust with zero external crates: hand-written LLVM-C FFI
-  (no inkwell/llvm-sys), pipeline lexer → parser → strict typecheck → LLVM O3
-  → object file → clang link.
+  (no inkwell/llvm-sys), pipeline lexer 鈫?parser 鈫?strict typecheck 鈫?LLVM O3
+  鈫?object file 鈫?clang link.
 - Primitives (int/float/bool/string), functions (mutual recursion), control
   flow, `print` builtin.
-- `axon build / run / ir` CLI with `--json` diagnostics for AI agents.
+- `Aoxn build / run / ir` CLI with `--json` diagnostics for AI agents.
 - Benchmarks: parity with `clang -O3` on identical algorithms.
+

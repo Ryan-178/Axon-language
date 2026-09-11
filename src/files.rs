@@ -1,4 +1,4 @@
-//! Compilation-wide file name registry.
+﻿//! Compilation-wide file name registry.
 //! Diagnostics carry a file *index*; the human/JSON form resolves it here.
 //! Single compilation = single thread, so a thread_local registry is safe
 //! (cargo test runs each test in its own thread).
@@ -32,3 +32,4 @@ pub fn name(idx: u32) -> String {
 pub fn clear() {
     FILES.with(|f| f.borrow_mut().clear());
 }
+

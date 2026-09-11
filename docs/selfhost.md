@@ -1,38 +1,38 @@
-# Self-Hosting Feasibility Assessment
+﻿# Self-Hosting Feasibility Assessment
 
-> Can Axon be rewritten in Axon? Short answer: **yes — with 4 compiler
-> features and a disciplined bootstrap plan.** The riskiest assumption has
-> already been validated by a working proof of concept
-> (`examples/ffi_llvm.ax`): an Axon program drives the LLVM-C API through
-> `extern def` and emits real IR.
+> Can Aoxn be rewritten in Aoxn? Short answer: **yes — and stage 1 is done**:
+> the Aoxn lexer written in Aoxn lives in `selfhost/lexer.ax` (verified by an
+> exact token-stream test). The riskiest assumption was validated first by a
+> working proof of concept (`examples/ffi_llvm.ax`): an Aoxn program drives
+> the LLVM-C API through `extern def` and emits real IR.
 
 ## 1. Evidence: the FFI proof of concept
 
-`examples/ffi_llvm.ax` calls 12 LLVM-C functions from plain Axon code and
+`examples/ffi_llvm.ax` calls 12 LLVM-C functions from plain Aoxn code and
 produces:
 
 ```llvm
 define i64 @answer() {
 entry:
-  ret i64 42          ; LLVMBuildAdd(20, 22) — O3 constant-folded
+  ret i64 42          ; LLVMBuildAdd(20, 22) 鈥?O3 constant-folded
 }
 ```
 
 Key facts established by this experiment:
 
 - **Pointers work as `int`**: LLVM handles (`LLVMContextRef`, `TypeRef`,
-  ...) are 8-byte values; Axon `int` is i64 — ABI-identical on x86-64. No
+  ...) are 8-byte values; Aoxn `int` is i64 鈥?ABI-identical on x86-64. No
   pointer type is needed to *hold* opaque handles.
-- **Strings work as `char*`**: Axon string literals/heap strings are
-  NUL-terminated byte buffers — exactly what the C API expects.
+- **Strings work as `char*`**: Aoxn string literals/heap strings are
+  NUL-terminated byte buffers 鈥?exactly what the C API expects.
 - **Any C library can be linked**: `-l LLVM-C -L <dir>` flags pass through
   to clang (v0.8).
 - Scalable pattern: the entire LLVM-C surface the compiler needs is
   addressable with `extern def` + int/string parameters.
 
-## 2. What the compiler needs vs what Axon has
+## 2. What the compiler needs vs what Aoxn has
 
-| Requirement (Rust impl today) | Axon now | Gap |
+| Requirement (Rust impl today) | Aoxn now | Gap |
 |---|---|---|
 | Unicode/ASCII scanning, char classes | int arithmetic, comparisons | none |
 | Token vector (grow) | fixed arrays only | **dynamic arrays** |
@@ -41,28 +41,28 @@ Key facts established by this experiment:
 | HashMap for symbol tables | none | dynamic arrays + linear/probing |
 | String building (lexer) | `+` concat, no indexing | **string indexing / char** |
 | Mutating buffers (lexer, codegen strings) | immutable strings | **mutable byte buffers** |
-| LLVM-C FFI | `extern def` (int/string) | proven ✓ |
+| LLVM-C FFI | `extern def` (int/string) | proven 鉁?|
 | Spawn clang for linking | none | `extern def system(...)` or CreateProcess |
 | Read source files | none | `fopen/fread` via FFI (needs ptr-as-int) |
-| Generics for containers | ✓ monomorphized | none |
-| Modules, file loading | ✓ imports | none |
-| Diagnostics w/ files, JSON output | ✓ | none |
+| Generics for containers | 鉁?monomorphized | none |
+| Modules, file loading | 鉁?imports | none |
+| Diagnostics w/ files, JSON output | 鉁?| none |
 
 ## 3. Gaps, ranked
 
-### B1 — dynamic arrays (blocker)
+### B1 鈥?dynamic arrays (blocker)
 A growable `Vec[T]` in the stdlib, built on `malloc`/`realloc` via FFI.
 Generics already exist, so `Vec[T]` is a stdlib artifact, not a compiler
 feature. Needs: pointer-holding (int is fine), malloc/realloc/free externs,
-and **addressability** — growing a vec must write back its pointer:
+and **addressability** 鈥?growing a vec must write back its pointer:
 `v = vec_push(v, item)` (functional style, value semantics preserved).
 Effort: ~150 lines of stdlib. Unblocks token vectors, AST nodes, scopes.
 
-### B2 — sum types or tagged-union ergonomics (blocker for sane AST)
+### B2 鈥?sum types or tagged-union ergonomics (blocker for sane AST)
 The AST is enums all the way down (`Expr::Binary{op,lhs,rhs}`). Without sum
 types, use the C pattern:
 
-```axon
+```Aoxn
 struct Expr:
     tag: int          # EXPR_INT, EXPR_VAR, EXPR_BINARY, ...
     ival: int
@@ -77,34 +77,38 @@ Alternative: add real `enum`/`match` to the language (bigger language
 change, better long-term). Recommendation: **arena + tagged structs first,
 `match` syntax later**.
 
-### B3 — string indexing / mutable byte buffers (major)
-The lexer needs `s[i]`, `s[i] = c`, char↔int. Options:
+### B3 鈥?string indexing / mutable byte buffers (major)
+The lexer needs `s[i]`, `s[i] = c`, char鈫攊nt. Options:
 - stdlib functions over malloc'd buffers (`buf_get`, `buf_set`, `buf_len`)
-  using int-as-pointer FFI — no language change;
+  using int-as-pointer FFI 鈥?no language change;
 - or first-class `char` type + indexing (language change, on roadmap anyway).
 Recommendation: buffer functions in stdlib now, `char` later.
 
-### B4 — file I/O + process spawn (major, small)
-`fopen/fread/fclose` and `system`/`CreateProcess` via `extern def` — all
+### B4 鈥?file I/O + process spawn (major, small)
+`fopen/fread/fclose` and `system`/`CreateProcess` via `extern def` 鈥?all
 pointer-as-int friendly. ~40 lines of stdlib. Unblocks reading sources and
 invoking clang.
 
-### M1 — unsigned/byte types (minor)
+### M1 鈥?unsigned/byte types (minor)
 i64 covers char-classification and sizes; `u8` is a nicety, not a need.
 
-### M2 — compile-time evaluation (not needed)
+### M2 鈥?compile-time evaluation (not needed)
 The Rust compiler does no comptime; self-hosting doesn't require it.
 
 ## 4. Bootstrap plan
 
 ```
 stage 0  axonc.rust     current compiler (the crutch)
-stage 1  axonc.axon     compiler written in Axon
+stage 1  axonc.axon     compiler written in Aoxn
          axon build axonc.ax -l LLVM-C -L <llvm>\lib   → stage1.exe
 stage 2  stage1.exe compiles axonc.ax   → stage2.exe
          verify: stage1 and stage2 produce identical IR for the test suite
 stage 3  CI keeps the fixed point green: stage2 builds axonc.ax, outputs match
 ```
+
+Progress: **stage 1 is under way — the lexer component is complete**
+(`selfhost/lexer.ax`, ported and green in CI). Remaining stage-1 components:
+parser → typecheck → codegen → driver.
 
 The Rust compiler remains the bootstrap crutch until stage 2 is stable, then
 becomes a test oracle only. The self-hosted compiler does NOT need to link
@@ -113,14 +117,14 @@ LLVM-C via the C API forever — it can reuse the same emission path
 
 ## 5. Scale estimate
 
-| Component | Rust today | Axon estimate |
+| Component | Rust today | Aoxn estimate |
 |---|---|---|
 | lexer.rs | ~700 | ~900 (tagged structs + buffer fns) |
 | parser.rs | ~640 | ~800 |
 | typecheck.rs | ~1450 | ~1800 (monomorphizer included) |
 | codegen.rs | ~1100 | ~1400 (LLVM-C FFI calls) |
 | main/lib (CLI, link) | ~350 | ~400 |
-| **total** | **~4200 Rust** | **~5300 Axon** |
+| **total** | **~4200 Rust** | **~5300 Aoxn** |
 
 At the current velocity (one feature-milestone per session, each with full
 test coverage), the plan is:
@@ -128,22 +132,22 @@ test coverage), the plan is:
 1. **v0.9**: Vec[T] + buffer/string utils + file IO + process spawn (stdlib
    work, no language changes except maybe `char`).
 2. **v1.0**: arena-tagged-union discipline proven by writing a REAL tool in
-   Axon that parses Axon syntax (the stage-1 lexer only) — the dress
+   Aoxn that parses Aoxn syntax (the stage-1 lexer only) 鈥?the dress
    rehearsal.
-3. **v1.1–v1.3**: parser → typecheck → codegen in Axon, ported
+3. **v1.1鈥搗1.3**: parser 鈫?typecheck 鈫?codegen in Aoxn, ported
    component-by-component, each keeping the 75-test pipeline green from both
    compilers.
 4. **v1.4**: fixed-point CI (stage2 == stage1), self-hosting achieved.
 
 ## 6. Risks
 
-- **Speed of the Axon compiler compiled by itself**: the pipeline is
-  dominated by LLVM O3 (a C library), not by our Rust code — the risk is
+- **Speed of the Aoxn compiler compiled by itself**: the pipeline is
+  dominated by LLVM O3 (a C library), not by our Rust code 鈥?the risk is
   small; the interpreter-free design helps.
 - **Value semantics copying large AST nodes**: arena + indices (B2) avoids
-  big copies by design — this is why the arena is the recommended pattern.
-- **Debugging without a debugger story**: Axon diagnostics must be excellent
-  (they are, `--json`) because stage-1 bugs will surface as Axon-side
+  big copies by design 鈥?this is why the arena is the recommended pattern.
+- **Debugging without a debugger story**: Aoxn diagnostics must be excellent
+  (they are, `--json`) because stage-1 bugs will surface as Aoxn-side
   panics; mitigate with a `assert(cond, msg)` builtin early.
 - **Language churn during porting**: freeze language changes once stage-1
   work starts; the compiler being ported must not chase a moving target.
@@ -152,6 +156,7 @@ test coverage), the plan is:
 
 Feasible. The two genuinely new compiler features are dynamic arrays (stdlib)
 and a disciplined arena/tagged-union style (no language change required);
-everything else the pipeline needs — FFI, generics, modules, file-aware
-diagnostics — already exists and the LLVM-C path is proven end-to-end by a
+everything else the pipeline needs 鈥?FFI, generics, modules, file-aware
+diagnostics 鈥?already exists and the LLVM-C path is proven end-to-end by a
 working example in the repository.
+

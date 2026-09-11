@@ -1,5 +1,5 @@
 # Standard library demo - the import resolves relative to this file:
-#   axon run examples\stdlib_demo.ax
+#   Aoxn run examples\stdlib_demo.ax
 import "../stdlib/stdlib.ax"
 
 def main() -> int:
@@ -30,3 +30,4 @@ def main() -> int:
     # f-strings compose with library results too
     print(f"sqrt(2) ~= {sqrt(2.0)}")
     return 0
+

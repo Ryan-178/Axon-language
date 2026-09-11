@@ -1,14 +1,14 @@
-//! End-to-end pipeline tests: compile Axon source -> native exe -> run -> check output.
+﻿//! End-to-end pipeline tests: compile Aoxn source -> native exe -> run -> check output.
 
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use axon::build_exe;
+use aoxn::build_exe;
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-/// the in-Axon standard library (compiled together with stdlib tests)
+/// the in-Aoxn standard library (compiled together with stdlib tests)
 fn stdlib_src() -> String {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("stdlib").join("stdlib.ax");
     std::fs::read_to_string(path).expect("stdlib/stdlib.ax not found")
@@ -49,7 +49,7 @@ fn dedent(src: &str) -> String {
 fn build_and_run(src: &str) -> String {
     let src = &dedent(src);
     let id = COUNTER.fetch_add(1, Ordering::SeqCst) + std::process::id() as usize;
-    let dir = std::env::temp_dir().join("axon-tests");
+    let dir = std::env::temp_dir().join("Aoxn-tests");
     std::fs::create_dir_all(&dir).unwrap();
     let exe: PathBuf = dir.join(format!("t{id}.exe"));
 
@@ -73,7 +73,7 @@ fn build_and_run(src: &str) -> String {
 fn expect_compile_error(src: &str) -> String {
     let src = &dedent(src);
     let id = COUNTER.fetch_add(1, Ordering::SeqCst) + std::process::id() as usize;
-    let dir = std::env::temp_dir().join("axon-tests");
+    let dir = std::env::temp_dir().join("Aoxn-tests");
     std::fs::create_dir_all(&dir).unwrap();
     let exe: PathBuf = dir.join(format!("t{id}.exe"));
     match build_exe(src, &exe, true) {
@@ -88,11 +88,11 @@ fn hello_world() {
         r#"
         # the classic
         def main() -> int:
-            print("hello, axon")
+            print("hello, Aoxn")
             return 0
         "#,
     );
-    assert_eq!(out, "hello, axon\n");
+    assert_eq!(out, "hello, Aoxn\n");
 }
 
 #[test]
@@ -234,7 +234,7 @@ fn mutual_recursion() {
 
 #[test]
 fn exit_code_propagates() {
-    let dir = std::env::temp_dir().join("axon-tests");
+    let dir = std::env::temp_dir().join("Aoxn-tests");
     std::fs::create_dir_all(&dir).unwrap();
     let exe = dir.join(format!("exit-{}.exe", std::process::id()));
     build_exe("def main() -> int: return 42", &exe, true).unwrap();
@@ -719,7 +719,7 @@ fn string_concat() {
         def main() -> int:
             s = "hello" + ", " + "world"
             print(s)
-            print(greet("axon"))
+            print(greet("Aoxn"))
             t = ""
             t = t + "x" + "y" + "z"
             print(t)
@@ -728,7 +728,7 @@ fn string_concat() {
             return 0
         "#,
     );
-    assert_eq!(out, "hello, world\nhi, axon!\nxyz\n12\n3\n");
+    assert_eq!(out, "hello, world\nhi, Aoxn!\nxyz\n12\n3\n");
 }
 
 #[test]
@@ -935,7 +935,7 @@ fn f_string_basics() {
     let out = build_and_run(
         r#"
         def main() -> int:
-            name = "axon"
+            name = "Aoxn"
             version = 5
             print(f"hello {name}!")
             print(f"v{version}, {version * 2}")
@@ -947,7 +947,7 @@ fn f_string_basics() {
             return 0
         "#,
     );
-    assert_eq!(out, "hello axon!\nv5, 10\ntrue/false\nbraces: {literal}\nexpr: 6\n\njust text\n");
+    assert_eq!(out, "hello Aoxn!\nv5, 10\ntrue/false\nbraces: {literal}\nexpr: 6\n\njust text\n");
 }
 
 #[test]
@@ -1028,7 +1028,7 @@ fn rejects_fstring_of_array() {
     assert!(msg.contains("cannot convert [int; 2] to string"), "{msg}");
 }
 
-// ---- standard library (written in Axon itself, v0.7 generics) ----
+// ---- standard library (written in Aoxn itself, v0.7 generics) ----
 
 #[test]
 fn stdlib_math() {
@@ -1152,7 +1152,7 @@ use std::path::Path;
 
 fn tmp_dir(tag: &str) -> PathBuf {
     let id = COUNTER.fetch_add(1, Ordering::SeqCst) + std::process::id() as usize;
-    let dir = std::env::temp_dir().join(format!("axon-import-{tag}-{id}"));
+    let dir = std::env::temp_dir().join(format!("Aoxn-import-{tag}-{id}"));
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
@@ -1170,7 +1170,7 @@ fn import_transitive_and_include_once() {
     std::fs::write(dir.join("sub").join("deep.ax"), "def deep() -> int:\n    return 2\n").unwrap();
 
     let exe = dir.join("out.exe");
-    axon::build_paths_exe(
+    aoxn::build_paths_exe(
         &[dir.join("main.ax").display().to_string()],
         &exe,
         true,
@@ -1187,7 +1187,7 @@ fn import_cycle_detected() {
     std::fs::write(dir.join("b.ax"), "import \"a.ax\"\n\ndef fb() -> int:\n    return 1\n").unwrap();
 
     let exe = dir.join("out.exe");
-    match axon::build_paths_exe(&[dir.join("a.ax").display().to_string()], &exe, true) {
+    match aoxn::build_paths_exe(&[dir.join("a.ax").display().to_string()], &exe, true) {
         Ok(()) => panic!("expected circular import error"),
         Err(diags) => {
             assert!(diags[0].message.contains("circular import"), "{:?}", diags[0]);
@@ -1201,7 +1201,7 @@ fn import_missing_file() {
     let dir = tmp_dir("missing");
     std::fs::write(dir.join("main.ax"), "import \"nope.ax\"\n\ndef main() -> int:\n    return 0\n").unwrap();
     let exe = dir.join("out.exe");
-    match axon::build_paths_exe(&[dir.join("main.ax").display().to_string()], &exe, true) {
+    match aoxn::build_paths_exe(&[dir.join("main.ax").display().to_string()], &exe, true) {
         Ok(()) => panic!("expected import error"),
         Err(diags) => assert!(diags[0].message.contains("cannot open"), "{:?}", diags[0]),
     }
@@ -1213,10 +1213,10 @@ fn import_error_reports_importing_file() {
     std::fs::write(dir.join("main.ax"), "import \"lib.ax\"\n\ndef main() -> int:\n    print(helper())\n    return 0\n").unwrap();
     std::fs::write(dir.join("lib.ax"), "def helper() -> int:\n    print(unknown_var)\n    return 0\n").unwrap();
     let exe = dir.join("out.exe");
-    match axon::build_paths_exe(&[dir.join("main.ax").display().to_string()], &exe, true) {
+    match aoxn::build_paths_exe(&[dir.join("main.ax").display().to_string()], &exe, true) {
         Ok(()) => panic!("expected compile error"),
         Err(diags) => {
-            let file = axon::files::name(diags[0].file);
+            let file = aoxn::files::name(diags[0].file);
             assert!(file.contains("lib.ax"), "{:?} / {file}", diags[0]);
             assert_eq!(diags[0].line, 2, "{:?}", diags[0]);
             assert!(diags[0].message.contains("unknown variable 'unknown_var'"), "{:?}", diags[0]);
@@ -1265,7 +1265,7 @@ fn stdlib_str_bytes_and_classes() {
     let out = build_and_run_with_stdlib(
         r#"
         def main() -> int:
-            s = "Axon9!"
+            s = "Aoxn9!"
             print(str_get(s, 0))          # 'A' = 65
             print(str_get(s, 4))          # '9' = 57
             print(is_digit(str_get(s, 4)))
@@ -1284,8 +1284,8 @@ fn stdlib_file_io_roundtrip() {
     let out = build_and_run_with_stdlib(
         r#"
         def main() -> int:
-            path = "axon_stdlib_test.txt"
-            ok = write_file(path, "hello from axon")
+            path = "AOXN_stdlib_test.txt"
+            ok = write_file(path, "hello from Aoxn")
             print(ok)
             content = read_file(path)
             print(content)
@@ -1294,7 +1294,7 @@ fn stdlib_file_io_roundtrip() {
             return 0
         "#,
     );
-    assert!(out.starts_with("true\nhello from axon\n15\ntrue\n"), "{out}");
+    assert!(out.starts_with("true\nhello from Aoxn\n15\ntrue\n"), "{out}");
 }
 
 #[test]
@@ -1309,3 +1309,34 @@ fn stdlib_system_spawn() {
     );
     assert_eq!(out, "7\n");
 }
+
+// ---- self-hosting stage 1: the Aoxn lexer written in Aoxn (v0.10) ----
+
+#[test]
+fn selfhost_lexer_token_stream() {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let demo = manifest.join("selfhost").join("lex_demo.ax");
+    let exe = std::env::temp_dir()
+        .join("axon-tests")
+        .join(format!("selfhost-lex-{}.exe", std::process::id()));
+    std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+
+    aoxn::build_paths_exe(&[demo.display().to_string()], &exe, true)
+        .expect("self-host lexer demo failed to compile");
+    let out = Command::new(&exe).output().expect("failed to run");
+    let _ = std::fs::remove_file(&exe);
+    assert!(out.status.success(), "self-host lexer demo crashed: {:?}", out.status.code());
+
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "DEF\nIDENT main\nLPAREN\nRPAREN\nARROW\nTYINT\nCOLON\nNEWLINE\n\
+         INDENT\n\
+         IDENT x\nASSIGN\nINT 1\nNEWLINE\n\
+         IDENT print\nLPAREN\nSTR hi\nCOMMA\nFLOAT 2.5\nRPAREN\nNEWLINE\n\
+         RETURN\nIDENT x\nNEWLINE\n\
+         DEDENT\n\
+         EOF\n"
+    );
+}
+
+
