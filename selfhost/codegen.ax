@@ -3,11 +3,11 @@
 # Drives the LLVM-C API through `extern def` (pointers pass as int) and emits
 # a native object file for the type-checked AST from typecheck.ax.
 #
-# Slice-1 scope: int/void functions, int locals, arithmetic and comparisons,
+# Slice-1 scope: int/bool functions and locals, arithmetic and comparisons,
 # if/else, while, for-range, break/continue, direct calls (including generic
-# instances routed through call_node/call_fni). Strings, floats, bool locals,
-# structs, arrays and builtins are rejected with a "codegen:" diagnostic —
-# later slices extend coverage.
+# instances routed through call_node/call_fni), and print(int/bool). Strings,
+# floats, structs, arrays and other builtins are rejected with a "codegen:"
+# diagnostic — later slices extend coverage.
 #
 # Write-back discipline: every helper returns the updated Gen.
 
@@ -54,6 +54,8 @@ extern def LLVMBuildRet(b: int, v: int)
 extern def LLVMBuildRetVoid(b: int)
 extern def LLVMBuildUnreachable(b: int)
 extern def LLVMBuildTrunc(b: int, v: int, ty: int, name: string) -> int
+extern def LLVMBuildGlobalStringPtr(b: int, s: string, name: string) -> int
+extern def LLVMPointerTypeInContext(ctx: int, addrspace: int) -> int
 extern def LLVMGetParam(f: int, i: int) -> int
 extern def LLVMGetNamedFunction(m: int, name: string) -> int
 extern def LLVMInitializeX86TargetInfo()
@@ -119,12 +121,16 @@ struct Gen:
     i1: int
     i32: int
     i64: int
+    ptr: int
+    printf: int
+    printf_ty: int
     fn_ref: Vec        # fni -> LLVMValueRef
     fn_llty: Vec       # fni -> LLVMTypeRef
     entry: Vec         # fni -> entry basic block
     cur_fni: int
     loc_name: Vec
     loc_slot: Vec
+    loc_tag: Vec       # type-arena tag of each local (TY_INT / TY_BOOL)
     loop_cont: Vec
     loop_after: Vec
     err: int
@@ -148,12 +154,16 @@ def gen_new(c: CState) -> Gen:
         i1=0,
         i32=0,
         i64=0,
+        ptr=0,
+        printf=0,
+        printf_ty=0,
         fn_ref=vec_new(),
         fn_llty=vec_new(),
         entry=vec_new(),
         cur_fni=-1,
         loc_name=vec_new(),
         loc_slot=vec_new(),
+        loc_tag=vec_new(),
         loop_cont=vec_new(),
         loop_after=vec_new(),
         err=0,
@@ -166,6 +176,7 @@ def gen_new(c: CState) -> Gen:
     g.i1 = LLVMInt1TypeInContext(g.ctx)
     g.i32 = LLVMInt32TypeInContext(g.ctx)
     g.i64 = LLVMInt64TypeInContext(g.ctx)
+    g.ptr = LLVMPointerTypeInContext(g.ctx, 0)
     g.builder = LLVMCreateBuilderInContext(g.ctx)
     i = 0
     while i < c.fn_name.len:
@@ -181,6 +192,8 @@ def ty_ll(g: Gen, ty: int) -> int:
     t = ty_tag(g.c, ty)
     if t == TY_INT():
         return g.i64
+    if t == TY_BOOL():
+        return g.i1
     if t == TY_VOID():
         return 0
     return -1
@@ -192,6 +205,42 @@ def local_slot(g: Gen, name: string) -> int:
             return vec_get(g.loc_slot, i)
         i = i - 1
     return 0
+
+def local_tag(g: Gen, name: string) -> int:
+    i = g.loc_name.len - 1
+    while i >= 0:
+        if as_string(vec_get(g.loc_name, i)) == name:
+            return vec_get(g.loc_tag, i)
+        i = i - 1
+    return -1
+
+# value kind of a declared type tag: RK_INT / RK_BOOL, -1 when unsupported
+def tag_kind(tag: int) -> int:
+    if tag == TY_INT():
+        return RK_INT()
+    if tag == TY_BOOL():
+        return RK_BOOL()
+    return -1
+
+# LLVM type for a type-arena *tag* (ty_ll takes an arena index)
+def ll_of_tag(g: Gen, tag: int) -> int:
+    if tag == TY_INT():
+        return g.i64
+    if tag == TY_BOOL():
+        return g.i1
+    return 0
+
+def get_printf(g: Gen) -> Gen:
+    if g.printf != 0:
+        return g
+    buf = malloc(8)
+    store_i64(buf, g.ptr)
+    g.printf_ty = LLVMFunctionType(g.i32, buf, 1, 1)
+    g.printf = LLVMAddFunction(g.module, "printf", g.printf_ty)
+    return g
+
+def fmt_ptr(g: Gen, s: string) -> int:
+    return LLVMBuildGlobalStringPtr(g.builder, s, ".fmt")
 
 def add_bb(g: Gen, fname: string) -> int:
     return LLVMAppendBasicBlockInContext(g.ctx, vec_get(g.fn_ref, g.cur_fni), fname)
@@ -292,8 +341,13 @@ def emit_expr(g: Gen, e: int) -> Gen:
         slot = local_slot(g, name)
         if slot == 0:
             return gerr(g, "codegen: unknown local '" + name + "'")
-        g.rv = LLVMBuildLoad2(g.builder, g.i64, slot, name)
-        g.rk = RK_INT()
+        tag = local_tag(g, name)
+        if tag == TY_BOOL():
+            g.rv = LLVMBuildLoad2(g.builder, g.i1, slot, name)
+            g.rk = RK_BOOL()
+        else:
+            g.rv = LLVMBuildLoad2(g.builder, g.i64, slot, name)
+            g.rk = RK_INT()
         return g
     if t == N_UNARY():
         op = node_ival(g.c.p, e)
@@ -360,6 +414,9 @@ def emit_binary(g: Gen, e: int) -> Gen:
     return g
 
 def emit_call(g: Gen, e: int) -> Gen:
+    name = node_sval(g.c.p, e)
+    if name == "print":
+        return emit_print(g, e)
     # generic calls already have their instance routed by the checker
     fni = -1
     i = 0
@@ -367,7 +424,6 @@ def emit_call(g: Gen, e: int) -> Gen:
         if vec_get(g.c.call_node, i) == e:
             fni = vec_get(g.c.call_fni, i)
         i = i + 1
-    name = node_sval(g.c.p, e)
     if fni == -1:
         fni = sig_index(g.c, name)
     if fni == -1:
@@ -380,13 +436,14 @@ def emit_call(g: Gen, e: int) -> Gen:
     a = node_child(g.c.p, e)
     while a != -1 and g.err == 0:
         pty = sig_param_ty(g.c, fni, k)
-        if ty_tag(g.c, pty) != TY_INT():
-            return gerr(g, "codegen: only int call arguments are supported yet")
+        want = tag_kind(ty_tag(g.c, pty))
+        if want == -1:
+            return gerr(g, "codegen: unsupported parameter type in call to '" + name + "'")
         g = emit_expr(g, node_child(g.c.p, a))
         if g.err == 1:
             return g
-        if g.rk != RK_INT():
-            return gerr(g, "codegen: int argument expected in call to '" + name + "'")
+        if g.rk != want:
+            return gerr(g, "codegen: argument kind mismatch in call to '" + name + "'")
         store_i64(buf + k * 8, g.rv)
         k = k + 1
         a = node_next(g.c.p, a)
@@ -396,12 +453,60 @@ def emit_call(g: Gen, e: int) -> Gen:
     fnty = vec_get(g.fn_llty, fni)
     r = LLVMBuildCall2(g.builder, fnty, ref, buf, np, "")
     rty = vec_get(g.c.fn_ret, fni)
-    if ty_tag(g.c, rty) == TY_VOID():
+    tag = ty_tag(g.c, rty)
+    if tag == TY_VOID():
         g.rk = RK_VOID()
+    elif tag == TY_BOOL():
+        g.rk = RK_BOOL()
     else:
         g.rk = RK_INT()
     g.rv = r
     return g
+
+# print(int) / print(bool): printf("%lld\n") or a true/false branch
+def emit_print(g: Gen, e: int) -> Gen:
+    a = node_child(g.c.p, e)
+    if a == -1 or node_next(g.c.p, a) != -1:
+        return gerr(g, "codegen: print expects exactly 1 argument")
+    g = emit_expr(g, node_child(g.c.p, a))
+    if g.err == 1:
+        return g
+    g = get_printf(g)
+    if g.rk == RK_INT():
+        fmt = fmt_ptr(g, "%lld\n")
+        args = malloc(16)
+        store_i64(args, fmt)
+        store_i64(args + 8, g.rv)
+        LLVMBuildCall2(g.builder, g.printf_ty, g.printf, args, 2, "")
+        g.rk = RK_VOID()
+        g.rv = 0
+        return g
+    if g.rk == RK_BOOL():
+        v = g.rv
+        tbb = add_bb(g, "print.true")
+        fbb = add_bb(g, "print.false")
+        end = add_bb(g, "print.end")
+        LLVMBuildCondBr(g.builder, v, tbb, fbb)
+        fmt = fmt_ptr(g, "%s\n")
+        tstr = LLVMBuildGlobalStringPtr(g.builder, "true", ".true")
+        fstr = LLVMBuildGlobalStringPtr(g.builder, "false", ".false")
+        g = pos(g, tbb)
+        ta = malloc(16)
+        store_i64(ta, fmt)
+        store_i64(ta + 8, tstr)
+        LLVMBuildCall2(g.builder, g.printf_ty, g.printf, ta, 2, "")
+        LLVMBuildBr(g.builder, end)
+        g = pos(g, fbb)
+        fa = malloc(16)
+        store_i64(fa, fmt)
+        store_i64(fa + 8, fstr)
+        LLVMBuildCall2(g.builder, g.printf_ty, g.printf, fa, 2, "")
+        LLVMBuildBr(g.builder, end)
+        g = pos(g, end)
+        g.rk = RK_VOID()
+        g.rv = 0
+        return g
+    return gerr(g, "codegen: print supports int/bool yet")
 
 # ---- statements ----
 
@@ -454,6 +559,7 @@ def emit_block(g: Gen, block: int) -> Gen:
 def emit_let(g: Gen, stmt: int) -> Gen:
     name = node_sval(g.c.p, stmt)
     value = node_child(g.c.p, stmt)
+    ann_tag = -1
     if node_ival(g.c.p, stmt) == 1:
         tyn = value
         value = node_next(g.c.p, tyn)
@@ -463,18 +569,27 @@ def emit_let(g: Gen, stmt: int) -> Gen:
             g.err = 1
             g.errmsg = c2.errmsg
             return g
-        if ty_tag(g.c, c2.r_ty) != TY_INT():
-            return gerr(g, "codegen: only int annotations are supported yet")
+        ann_tag = ty_tag(g.c, c2.r_ty)
+        if tag_kind(ann_tag) == -1:
+            return gerr(g, "codegen: only int/bool annotations are supported yet")
     g = emit_expr(g, value)
     if g.err == 1:
         return g
-    if g.rk != RK_INT():
-        return gerr(g, "codegen: only int bindings are supported yet")
+    if g.rk != RK_INT() and g.rk != RK_BOOL():
+        return gerr(g, "codegen: only int/bool bindings are supported yet")
+    if ann_tag != -1 and tag_kind(ann_tag) != g.rk:
+        return gerr(g, "codegen: annotation does not match the initializer")
+    tag = TY_INT()
+    if g.rk == RK_BOOL():
+        tag = TY_BOOL()
     slot = local_slot(g, name)
     if slot == 0:
-        slot = alloca_entry(g, g.i64, name)
+        slot = alloca_entry(g, ll_of_tag(g, tag), name)
         g.loc_name = vec_push(g.loc_name, as_ptr(name))
         g.loc_slot = vec_push(g.loc_slot, slot)
+        g.loc_tag = vec_push(g.loc_tag, tag)
+    elif local_tag(g, name) != tag:
+        return gerr(g, "codegen: cannot rebind '" + name + "' with a different type")
     LLVMBuildStore(g.builder, g.rv, slot)
     return g
 
@@ -487,11 +602,12 @@ def emit_assign(g: Gen, stmt: int) -> Gen:
     slot = local_slot(g, name)
     if slot == 0:
         return gerr(g, "codegen: unknown local '" + name + "'")
+    want = tag_kind(local_tag(g, name))
     g = emit_expr(g, value)
     if g.err == 1:
         return g
-    if g.rk != RK_INT():
-        return gerr(g, "codegen: only int assignment is supported yet")
+    if g.rk != want:
+        return gerr(g, "codegen: assignment kind mismatch for '" + name + "'")
     LLVMBuildStore(g.builder, g.rv, slot)
     return g
 
@@ -506,9 +622,14 @@ def emit_return(g: Gen, stmt: int) -> Gen:
         return g
     if ty_tag(g.c, rty) == TY_VOID():
         return gerr(g, "codegen: void function cannot return a value")
+    want = tag_kind(ty_tag(g.c, rty))
+    if want == -1:
+        return gerr(g, "codegen: unsupported return type")
     g = emit_expr(g, e)
     if g.err == 1:
         return g
+    if g.rk != want:
+        return gerr(g, "codegen: return kind mismatch")
     LLVMBuildRet(g.builder, g.rv)
     g.term = 1
     return g
@@ -621,6 +742,7 @@ def emit_for(g: Gen, stmt: int) -> Gen:
     var_slot = alloca_entry(g, g.i64, var)
     g.loc_name = vec_push(g.loc_name, as_ptr(var))
     g.loc_slot = vec_push(g.loc_slot, var_slot)
+    g.loc_tag = vec_push(g.loc_tag, TY_INT())
     header = add_bb(g, "for.cond")
     body_bb = add_bb(g, "for.body")
     inc_bb = add_bb(g, "for.inc")
@@ -660,6 +782,7 @@ def emit_fn(g: Gen, fni: int, node: int) -> Gen:
     g.cur_fni = fni
     g.loc_name = vec_new()
     g.loc_slot = vec_new()
+    g.loc_tag = vec_new()
     g.loop_cont = vec_new()
     g.loop_after = vec_new()
     g = pos(g, vec_get(g.entry, fni))
@@ -674,12 +797,14 @@ def emit_fn(g: Gen, fni: int, node: int) -> Gen:
         elif t == N_PARAM():
             pname = node_sval(g.c.p, kid)
             pty = sig_param_ty(g.c, fni, k)
-            if ty_tag(g.c, pty) != TY_INT():
-                return gerr(g, "codegen: only int parameters are supported yet")
-            slot = alloca_entry(g, g.i64, pname)
+            ptag = ty_tag(g.c, pty)
+            if tag_kind(ptag) == -1:
+                return gerr(g, "codegen: only int/bool parameters are supported yet")
+            slot = alloca_entry(g, ll_of_tag(g, ptag), pname)
             LLVMBuildStore(g.builder, LLVMGetParam(ref, k), slot)
             g.loc_name = vec_push(g.loc_name, as_ptr(pname))
             g.loc_slot = vec_push(g.loc_slot, slot)
+            g.loc_tag = vec_push(g.loc_tag, ptag)
             k = k + 1
         kid = node_next(g.c.p, kid)
     if body == -1:
@@ -727,6 +852,16 @@ def gen_program(g: Gen) -> Gen:
     wbb = LLVMAppendBasicBlockInContext(g.ctx, wrapper, "entry")
     g = pos(g, wbb)
     g.cur_fni = main_fni
+    # deterministic output: stdout to binary mode, like the Rust codegen
+    setmode_params = malloc(16)
+    store_i64(setmode_params, g.i32)
+    store_i64(setmode_params + 8, g.i32)
+    setmode_ty = LLVMFunctionType(g.i32, setmode_params, 2, 0)
+    setmode = LLVMAddFunction(g.module, "_setmode", setmode_ty)
+    setmode_args = malloc(16)
+    store_i64(setmode_args, LLVMConstInt(g.i32, 1, 0))
+    store_i64(setmode_args + 8, LLVMConstInt(g.i32, 32768, 0))
+    LLVMBuildCall2(g.builder, setmode_ty, setmode, setmode_args, 2, "")
     call = LLVMBuildCall2(g.builder, vec_get(g.fn_llty, main_fni), vec_get(g.fn_ref, main_fni), 0, 0, "")
     rty = vec_get(c.fn_ret, main_fni)
     if ty_tag(c, rty) == TY_INT():

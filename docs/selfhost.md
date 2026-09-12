@@ -113,8 +113,9 @@ parser (`selfhost/parser.ax`) and the type checker (`selfhost/typecheck.ax`,
 with generic monomorphization) run green in CI, including a full check of
 `stdlib.ax`. Multi-file imports are resolved in Aoxn too (`selfhost/load.ax`),
 so the front end consumes real `.ax` files. Stage 4 has started:
-`selfhost/codegen.ax` emits native objects for int/void programs through
-LLVM-C. Remaining: broader codegen coverage, then the CLI/driver.
+`selfhost/codegen.ax` emits native objects for int/bool programs through
+LLVM-C, including `print`. Remaining: broader codegen coverage, then the
+CLI/driver.
 
 The Rust compiler remains the bootstrap crutch until stage 2 is stable, then
 becomes a test oracle only. The self-hosted compiler does NOT need to link

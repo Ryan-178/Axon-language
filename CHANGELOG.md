@@ -3,6 +3,24 @@
 Notable changes to the Aoxn compiler and language. Aoxn follows semver-ish
 minor bumps while pre-1.0: each minor version is a language milestone.
 
+## [0.15.0] - 2026-09-12
+
+### Added
+- **Self-hosted codegen: `bool` support and `print`.** The Aoxn code
+  generator (`selfhost/codegen.ax`) now types locals/params/returns as
+  `i64` or `i1` (arena tag -> LLVM type), so `bool` bindings, comparisons
+  held in variables, and bool-returning functions work end-to-end.
+  `print(int)` calls `printf("%lld\n")`; `print(bool)` branches over the
+  static `true`/`false` strings like the Rust codegen. The C entry wrapper
+  now sets stdout to binary mode (`_setmode`) for byte-identical newlines.
+- `selfhost_codegen_int_slice` now compares **stdout** between the
+  self-hosted object and the Rust compiler's build of the same program
+  (`41\n24\ntrue\ntrue\n-41\n`, exit code 65) in addition to exit codes.
+
+### Fixed
+- Self-hosted codegen passed type-arena *tags* where `ty_ll` expects arena
+  *indices*, allocating garbage element types for locals/params (crash).
+
 ## [0.14.0] - 2026-09-12
 
 ### Added

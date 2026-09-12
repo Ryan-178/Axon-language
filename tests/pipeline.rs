@@ -1559,14 +1559,16 @@ fn selfhost_codegen_int_slice() {
     let _ = std::fs::remove_file(&exe_self);
     let _ = std::fs::remove_file(&obj);
 
-    // parity: the Rust compiler must produce the same exit code for the source
-    let src = "def twice[T](x: T) -> T:\n    return x + x\n\ndef add(a: int, b: int) -> int:\n    return a + b\n\ndef fact(n: int) -> int:\n    if n <= 1:\n        return 1\n    return n * fact(n - 1)\n\ndef main() -> int:\n    t = twice(3)\n    for i in range(1, 6):\n        t = t + i * i\n    while t > 50:\n        t = t - 10\n    return add(t, fact(4)) % 100\n";
+    // parity: the Rust compiler must produce the same stdout and exit code
+    let src = "def twice[T](x: T) -> T:\n    return x + x\n\ndef add(a: int, b: int) -> int:\n    return a + b\n\ndef fact(n: int) -> int:\n    if n <= 1:\n        return 1\n    return n * fact(n - 1)\n\ndef main() -> int:\n    t = twice(3)\n    for i in range(1, 6):\n        t = t + i * i\n    while t > 50:\n        t = t - 10\n    ok = t == 41\n    print(t)\n    print(fact(4))\n    print(t > 40)\n    print(ok)\n    print(-t)\n    return add(t, fact(4)) % 100\n";
     let exe_rust = dir.join(format!("selfhost-cg-rs-{}.exe", std::process::id()));
     aoxn::build_exe(src, &exe_rust, true).expect("rust reference compile failed");
     let out_rust = Command::new(&exe_rust).output().expect("failed to run rust reference");
     let _ = std::fs::remove_file(&exe_rust);
 
+    assert_eq!(String::from_utf8_lossy(&out_self.stdout), "41\n24\ntrue\ntrue\n-41\n");
     assert_eq!(out_self.status.code(), Some(65));
+    assert_eq!(out_rust.stdout, out_self.stdout);
     assert_eq!(out_rust.status.code(), out_self.status.code());
 }
 
