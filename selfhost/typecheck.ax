@@ -112,10 +112,9 @@ def alloc_ty(c: CState, tag: int, elem: int, ln: int, sname: string) -> CState:
     c.res_ok = 1
     return c
 
-def checker_new(st0: LexState) -> CState:
-    st = lex_all(st0)
+def checker_state() -> CState:
     c = CState(
-        p=parser_new(st),
+        p=parser_new(lex_state_new("")),
         err=0,
         errmsg="",
         loop_depth=0,
@@ -175,6 +174,13 @@ def checker_new(st0: LexState) -> CState:
     c.t_str = c.r_ty
     c = alloc_ty(c, TY_VOID(), 0, 0, "")
     c.t_void = c.r_ty
+    return c
+
+# checker over an already-parsed (possibly multi-file) parser state
+def checker_new(st0: LexState) -> CState:
+    st = lex_all(st0)
+    c = checker_state()
+    c.p = parser_new(st)
     return c
 
 def cerr(c: CState, msg: string) -> CState:
@@ -1468,9 +1474,10 @@ def check_fn_body(c: CState, fn_idx: int) -> CState:
 
 def check_all(c0: CState) -> CState:
     c = c0
-    c.p = parse_program(c.p)
-    if c.p.err == 1:
-        return cerr(c, "parse error: " + c.p.errmsg)
+    if c.p.root == -1:
+        c.p = parse_program(c.p)
+        if c.p.err == 1:
+            return cerr(c, "parse error: " + c.p.errmsg)
     c = collect_structs(c)
     if c.err == 1:
         return c

@@ -3,6 +3,21 @@
 Notable changes to the Aoxn compiler and language. Aoxn follows semver-ish
 minor bumps while pre-1.0: each minor version is a language milestone.
 
+## [0.14.0] - 2026-09-12
+
+### Added
+- **Self-hosting: multi-file import resolution in the Aoxn front end**
+  (`selfhost/load.ax`). `load_program(path)` reads a real `.ax` file, resolves
+  `import "..."` recursively (paths relative to the importing file), includes
+  each file once, rejects cycles with an import stack, and parses all files
+  into one shared arena so node indices stay valid across files. Top-level
+  nodes are spliced into a single program root (careful `next`-chain
+  detaching); `checker_state()` + `check_all` now accept an already-parsed
+  state. Verified by `selfhost/load_demo.ax` +
+  `selfhost_frontend_handles_imports` (diamond include-once, cycle rejection,
+  missing-file rejection, and `examples/stdlib_demo.ax` typechecking as a
+  real 2-file program with 10 monomorphized instances).
+
 ## [0.13.0] - 2026-09-12
 
 ### Added

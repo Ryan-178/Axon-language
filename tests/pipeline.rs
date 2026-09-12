@@ -1148,8 +1148,6 @@ fn rejects_uninferable_len() {
 
 // ---- import / module system (v0.8) ----
 
-use std::path::Path;
-
 fn tmp_dir(tag: &str) -> PathBuf {
     let id = COUNTER.fetch_add(1, Ordering::SeqCst) + std::process::id() as usize;
     let dir = std::env::temp_dir().join(format!("Aoxn-import-{tag}-{id}"));
@@ -1570,6 +1568,100 @@ fn selfhost_codegen_int_slice() {
 
     assert_eq!(out_self.status.code(), Some(65));
     assert_eq!(out_rust.status.code(), out_self.status.code());
+}
+
+// ---- self-hosting: multi-file import resolution in the Aoxn front end ----
+
+#[test]
+fn selfhost_frontend_handles_imports() {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let abs = |p: &str| manifest.join(p).display().to_string().replace('\\', "/");
+
+    // fixture tree: diamond include-once, a cycle, and a missing import.
+    // NB: the self-hosted loader opens paths with narrow fopen, so keep the
+    // fixture directory ASCII (temp_dir can contain non-ASCII user names).
+    let dir = manifest
+        .join("target")
+        .join(format!("shload-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("main.ax"),
+        "import \"b.ax\"\nimport \"c.ax\"\n\ndef main() -> int:\n    return b_val() + c_val()\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("b.ax"), "import \"d.ax\"\n\ndef b_val() -> int:\n    return d_val() + 1\n").unwrap();
+    std::fs::write(dir.join("c.ax"), "import \"d.ax\"\n\ndef c_val() -> int:\n    return d_val() + 2\n").unwrap();
+    std::fs::write(dir.join("d.ax"), "def d_val() -> int:\n    return 10\n").unwrap();
+    std::fs::write(dir.join("cyc_a.ax"), "import \"cyc_b.ax\"\n\ndef fa() -> int:\n    return 0\n").unwrap();
+    std::fs::write(dir.join("cyc_b.ax"), "import \"cyc_a.ax\"\n\ndef fb() -> int:\n    return 0\n").unwrap();
+    std::fs::write(dir.join("miss.ax"), "import \"nope.ax\"\n\ndef fm() -> int:\n    return 0\n").unwrap();
+    let fp = |name: &str| dir.join(name).display().to_string().replace('\\', "/");
+
+    let driver_src = format!(
+        "import \"{}\"\nimport \"{}\"\nimport \"{}\"\nimport \"{}\"\n\n\
+         def main() -> int:\n    \
+         r1 = load_program(\"{demo}\")\n    \
+         if r1.err == 1:\n        \
+         print(\"demo load err: \" + r1.errmsg)\n        \
+         return 1\n    \
+         c1 = checker_state()\n    \
+         c1.p = r1.p\n    \
+         c1 = check_all(c1)\n    \
+         if c1.err == 1:\n        \
+         print(\"demo check err: \" + c1.errmsg)\n        \
+         return 1\n    \
+         print(\"demo ok files=\" + str(r1.files.len) + \" instances=\" + str(c1.inst_names.len))\n    \
+         r2 = load_program(\"{diamond}\")\n    \
+         if r2.err == 1:\n        \
+         print(\"diamond load err: \" + r2.errmsg)\n        \
+         return 1\n    \
+         c2 = checker_state()\n    \
+         c2.p = r2.p\n    \
+         c2 = check_all(c2)\n    \
+         if c2.err == 1:\n        \
+         print(\"diamond check err: \" + c2.errmsg)\n        \
+         return 1\n    \
+         print(\"diamond ok files=\" + str(r2.files.len))\n    \
+         r3 = load_program(\"{cyc}\")\n    \
+         if r3.err == 0:\n        \
+         print(\"BUG: cycle accepted\")\n        \
+         return 1\n    \
+         print(\"cycle: \" + r3.errmsg)\n    \
+         r4 = load_program(\"{miss}\")\n    \
+         if r4.err == 0:\n        \
+         print(\"BUG: missing import accepted\")\n        \
+         return 1\n    \
+         print(\"missing: \" + r4.errmsg)\n    \
+         return 0\n",
+        abs("selfhost/lexer.ax"),
+        abs("selfhost/parser.ax"),
+        abs("selfhost/typecheck.ax"),
+        abs("selfhost/load.ax"),
+        demo = abs("examples/stdlib_demo.ax"),
+        diamond = fp("main.ax"),
+        cyc = fp("cyc_a.ax"),
+        miss = fp("miss.ax"),
+    );
+
+    let out_dir = std::env::temp_dir().join("axon-tests");
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let driver = out_dir.join(format!("selfhost-load-{}.ax", std::process::id()));
+    let exe = out_dir.join(format!("selfhost-load-{}.exe", std::process::id()));
+    std::fs::write(&driver, driver_src).unwrap();
+
+    aoxn::build_paths_exe(&[driver.display().to_string()], &exe, true)
+        .expect("self-host loader driver failed to compile");
+    let out = Command::new(&exe).output().expect("failed to run");
+    let _ = std::fs::remove_file(&exe);
+    let _ = std::fs::remove_file(&driver);
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(out.status.success(), "loader driver crashed: {:?}\n{text}", out.status.code());
+
+    assert!(text.contains("demo ok files=2 instances=10"), "{text}");
+    assert!(text.contains("diamond ok files=4"), "{text}");
+    assert!(text.contains("cycle: circular import"), "{text}");
+    assert!(text.contains("missing: cannot open"), "{text}");
 }
 
 

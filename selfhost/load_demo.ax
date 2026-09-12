@@ -1,0 +1,23 @@
+# Self-hosting loader demo: resolves imports from a real file on disk
+# (examples/stdlib_demo.ax -> ../stdlib/stdlib.ax), shares one arena for all
+# files and typechecks the merged program. Run from the repo root:
+#   aoxn run selfhost\load_demo.ax
+import "../stdlib/stdlib.ax"
+import "lexer.ax"
+import "parser.ax"
+import "typecheck.ax"
+import "load.ax"
+
+def main() -> int:
+    ls = load_program("examples/stdlib_demo.ax")
+    if ls.err == 1:
+        print("LOAD ERROR: " + ls.errmsg)
+        return 1
+    c = checker_state()
+    c.p = ls.p
+    c = check_all(c)
+    if c.err == 1:
+        print("CHECK ERROR: " + c.errmsg)
+        return 1
+    print("imports OK: files=" + str(ls.files.len) + " instances=" + str(c.inst_names.len))
+    return 0
