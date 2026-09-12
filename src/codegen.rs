@@ -728,8 +728,8 @@ impl Gen {
     /// memory only when needed. Avoids giant SSA aggregate load/stores 鈥?    /// those choke the optimizer (SROA) on large arrays.
     unsafe fn emit_aggregate_ptr(&mut self, expr: &Expr, locals: &mut Locals) -> Result<(LLVMValueRef, Type), String> {
         match expr {
-            Expr::ArrayRep { elem, count, lit_id, .. } => {
-                let (temp, ty) = self.fill_rep(elem, *count, *lit_id, locals)?;
+            Expr::ArrayRep { elem, count, .. } => {
+                let (temp, ty) = self.fill_rep(elem, *count, expr as *const Expr as usize, locals)?;
                 Ok((temp, ty))
             }
             _ if expr.is_lvalue() => self.emit_lvalue(expr, locals),
@@ -779,6 +779,12 @@ impl Gen {
                 if eff == "as_ptr" {
                     return Ok(Type::Int);
                 }
+                if eff == "load_i64" || eff == "load_u8" {
+                    return Ok(Type::Int);
+                }
+                if eff == "load_f64" {
+                    return Ok(Type::Float);
+                }
                 Err(format!("internal error: unknown call '{eff}' in type hint"))
             }
             Expr::Unary { expr, .. } => self.type_hint(expr, locals),
@@ -816,17 +822,17 @@ impl Gen {
         &mut self,
         elem: &Expr,
         count: usize,
-        lit_id: usize,
+        key: usize,
         locals: &mut Locals,
     ) -> Result<(LLVMValueRef, Type), String> {
         let (v, t) = self.emit_expr(elem, locals)?;
         let arr_ty = self.ty_of(&Type::Array { elem: Box::new(t.clone()), len: count });
-        let temp = self.lit_temp(lit_id, arr_ty);
-        let iter = self.rep_iter(lit_id);
+        let temp = self.lit_temp(key, arr_ty);
+        let iter = self.rep_iter(key);
         let fn_ref = self.fns[&self.cur_fn].ref_;
-        let cond_bb = self.add_bb(fn_ref, &format!("rep.cond{lit_id}"));
-        let body_bb = self.add_bb(fn_ref, &format!("rep.body{lit_id}"));
-        let end_bb = self.add_bb(fn_ref, &format!("rep.end{lit_id}"));
+        let cond_bb = self.add_bb(fn_ref, &format!("rep.cond{key}"));
+        let body_bb = self.add_bb(fn_ref, &format!("rep.body{key}"));
+        let end_bb = self.add_bb(fn_ref, &format!("rep.end{key}"));
 
         LLVMBuildStore(self.builder, LLVMConstInt(self.i64, 0, 0), iter);
         LLVMBuildBr(self.builder, cond_bb);
@@ -988,7 +994,7 @@ impl Gen {
                 let v = LLVMBuildLoad2(self.builder, self.ty_of(&t), ptr, self.cstr("field").as_ptr());
                 Ok((v, t))
             }
-            Expr::ArrayLit { elems, lit_id, .. } => {
+            Expr::ArrayLit { elems, .. } => {
                 // evaluate all elements first
                 let mut vals: Vec<LLVMValueRef> = Vec::with_capacity(elems.len());
                 let mut elem_ty: Option<Type> = None;
@@ -1005,7 +1011,7 @@ impl Gen {
                 let elem_ty = elem_ty.unwrap();
                 let n = elems.len();
                 let arr_ty = self.ty_of(&Type::Array { elem: Box::new(elem_ty.clone()), len: n });
-                let temp = self.lit_temp(*lit_id, arr_ty);
+                let temp = self.lit_temp(expr as *const Expr as usize, arr_ty);
                 for (i, v) in vals.iter().enumerate() {
                     let zero = LLVMConstInt(self.i64, 0, 0);
                     let idx = LLVMConstInt(self.i64, i as u64, 0);
@@ -1017,18 +1023,18 @@ impl Gen {
                 let agg = LLVMBuildLoad2(self.builder, arr_ty, temp, self.cstr("lit.val").as_ptr());
                 Ok((agg, Type::Array { elem: Box::new(elem_ty), len: n }))
             }
-            Expr::ArrayRep { elem, count, lit_id, .. } => {
+            Expr::ArrayRep { elem, count, .. } => {
                 // value context: fill the temp, then load (assignment contexts
                 // bypass this via emit_aggregate_ptr + memcpy)
-                let (temp, ty) = self.fill_rep(elem, *count, *lit_id, locals)?;
+                let (temp, ty) = self.fill_rep(elem, *count, expr as *const Expr as usize, locals)?;
                 let arr_ty = self.ty_of(&ty);
                 let agg = LLVMBuildLoad2(self.builder, arr_ty, temp, self.cstr("rep.val").as_ptr());
                 Ok((agg, ty))
             }
-            Expr::StructLit { name, fields, lit_id, .. } => {
-                self.emit_struct_construction(name, fields, *lit_id, locals)
+            Expr::StructLit { name, fields, .. } => {
+                self.emit_struct_construction(name, fields, expr as *const Expr as usize, locals)
             }
-            Expr::Call { name, args, pos, lit_id } => {
+            Expr::Call { name, args, pos, .. } => {
                 // generic calls are routed to their monomorphized instance
                 let node = expr as *const Expr as usize;
                 let routed: Option<String> = self.call_map.get(&node).cloned();
@@ -1223,7 +1229,7 @@ impl Gen {
                                 }
                             }
                         }
-                        return self.emit_struct_construction(name, &kws, *lit_id, locals);
+                        return self.emit_struct_construction(name, &kws, expr as *const Expr as usize, locals);
                     }
                     return Err(format!("internal error: unknown callable '{name}' at codegen"));
                 }
@@ -1269,7 +1275,7 @@ impl Gen {
         &mut self,
         name: &str,
         fields: &[(String, Expr)],
-        lit_id: usize,
+        key: usize,
         locals: &mut Locals,
     ) -> Result<(LLVMValueRef, Type), String> {
         let layout = self
@@ -1278,7 +1284,7 @@ impl Gen {
             .cloned()
             .ok_or_else(|| format!("internal error: unknown struct '{name}' at codegen"))?;
         let struct_ty = self.structs[name];
-        let temp = self.lit_temp(lit_id, struct_ty);
+        let temp = self.lit_temp(key, struct_ty);
         for (fname, fexpr) in fields {
             let (fidx, _fty) = layout
                 .iter()

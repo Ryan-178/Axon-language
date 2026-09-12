@@ -108,10 +108,12 @@ stage 2  stage1.exe compiles axonc.ax   → stage2.exe
 stage 3  CI keeps the fixed point green: stage2 builds axonc.ax, outputs match
 ```
 
-Progress: **stages 1 and 2 are complete** — the lexer (`selfhost/lexer.ax`)
-and the parser (`selfhost/parser.ax`) run green in CI, and the stage-3 type
-checker (`selfhost/typecheck.ax`) checks the whole `stdlib.ax` and supports
-generic monomorphization. Remaining components: codegen, then the CLI/driver.
+Progress: **stages 1–3 are complete** — the lexer (`selfhost/lexer.ax`), the
+parser (`selfhost/parser.ax`) and the type checker (`selfhost/typecheck.ax`,
+with generic monomorphization) run green in CI, including a full check of
+`stdlib.ax`. Stage 4 has started: `selfhost/codegen.ax` emits native objects
+for int/void programs through LLVM-C. Remaining: broader codegen coverage,
+then the CLI/driver.
 
 The Rust compiler remains the bootstrap crutch until stage 2 is stable, then
 becomes a test oracle only. The self-hosted compiler does NOT need to link

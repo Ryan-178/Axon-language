@@ -98,6 +98,7 @@ struct CState:
     # monomorphized instances
     inst_names: Vec
     inst_fni: Vec
+    inst_node: Vec
     q_node: Vec
     call_node: Vec
     call_fni: Vec
@@ -159,6 +160,7 @@ def checker_new(st0: LexState) -> CState:
         sub_len_val=0,
         inst_names=vec_new(),
         inst_fni=vec_new(),
+        inst_node=vec_new(),
         q_node=vec_new(),
         call_node=vec_new(),
         call_fni=vec_new(),
@@ -1426,6 +1428,7 @@ def instantiate_call(c: CState, gi: int, e: int, arg: int, nargs: int) -> CState
         fni = c.fn_name.len - 1
         c.inst_names = vec_push(c.inst_names, as_ptr(key))
         c.inst_fni = vec_push(c.inst_fni, fni)
+        c.inst_node = vec_push(c.inst_node, new_fn)
         c.q_node = vec_push(c.q_node, new_fn)
     c.call_node = vec_push(c.call_node, e)
     c.call_fni = vec_push(c.call_fni, fni)

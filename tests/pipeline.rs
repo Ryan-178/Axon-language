@@ -1180,6 +1180,26 @@ fn import_transitive_and_include_once() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "42\n");
 }
 
+// regression: per-file literal ids restart at 0; codegen literal temps must
+// be keyed per AST site, not per id (aggregate literals in two files collided
+// and referenced an alloca from the other function)
+#[test]
+fn import_aggregate_literals_across_files() {
+    let dir = tmp_dir("litids");
+    std::fs::write(dir.join("a.ax"), "def f() -> [int; 2]:\n    return [1, 2]\n").unwrap();
+    std::fs::write(
+        dir.join("main.ax"),
+        "import \"a.ax\"\n\ndef h() -> [int; 2]:\n    return [3, 4]\n\ndef main() -> int:\n    x = [5, 6]\n    return f()[0] + h()[0] + x[0]\n",
+    )
+    .unwrap();
+
+    let exe = dir.join("out.exe");
+    aoxn::build_paths_exe(&[dir.join("main.ax").display().to_string()], &exe, true)
+        .expect("compilation failed");
+    let out = Command::new(&exe).output().unwrap();
+    assert_eq!(out.status.code(), Some(9), "1 + 3 + 5");
+}
+
 #[test]
 fn import_cycle_detected() {
     let dir = tmp_dir("cycle");
@@ -1471,6 +1491,85 @@ fn selfhost_frontend_handles_stdlib() {
     assert!(out.status.success(), "self-host stdlib checker crashed: {:?}", out.status.code());
 
     assert_eq!(String::from_utf8_lossy(&out.stdout), "stdlib typechecks OK\n");
+}
+
+// ---- self-hosting stage 4: codegen slice 1 (int functions -> native exe) ----
+
+fn llvm_dir() -> Option<PathBuf> {
+    for key in ["AOXN_LLVM_DIR", "AXON_LLVM_DIR"] {
+        if let Ok(v) = std::env::var(key) {
+            let p = PathBuf::from(v);
+            if p.exists() {
+                return Some(p);
+            }
+        }
+    }
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("LLVM");
+    if repo.exists() {
+        return Some(repo);
+    }
+    let p = PathBuf::from("C:/Program Files/LLVM");
+    if p.exists() {
+        return Some(p);
+    }
+    None
+}
+
+#[test]
+fn selfhost_codegen_int_slice() {
+    let llvm = llvm_dir().expect("LLVM install not found (set AOXN_LLVM_DIR)");
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let demo = manifest.join("selfhost").join("codegen_demo.ax");
+    let dir = std::env::temp_dir().join("axon-tests");
+    std::fs::create_dir_all(&dir).unwrap();
+    let exe = dir.join(format!("selfhost-cg-{}.exe", std::process::id()));
+
+    aoxn::build_paths_opts(
+        &[demo.display().to_string()],
+        &exe,
+        true,
+        &["LLVM-C".to_string()],
+        &[llvm.join("lib").display().to_string()],
+    )
+    .expect("self-host codegen demo failed to compile");
+
+    let path = format!(
+        "{};{}",
+        llvm.join("bin").display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let out = Command::new(&exe)
+        .current_dir(&dir)
+        .env("PATH", &path)
+        .output()
+        .expect("failed to run codegen demo");
+    let _ = std::fs::remove_file(&exe);
+    assert!(
+        out.status.success(),
+        "self-host codegen demo crashed: {:?} {}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "codegen OK\n");
+
+    // link the self-hosted object and run it
+    let obj = dir.join("selfhost_out.obj");
+    assert!(obj.exists(), "self-hosted object was not written");
+    let exe_self = dir.join(format!("selfhost-cg-out-{}.exe", std::process::id()));
+    aoxn::link(&obj, &exe_self).expect("linking the self-hosted object failed");
+    let out_self = Command::new(&exe_self).output().expect("failed to run self-hosted exe");
+    let _ = std::fs::remove_file(&exe_self);
+    let _ = std::fs::remove_file(&obj);
+
+    // parity: the Rust compiler must produce the same exit code for the source
+    let src = "def twice[T](x: T) -> T:\n    return x + x\n\ndef add(a: int, b: int) -> int:\n    return a + b\n\ndef fact(n: int) -> int:\n    if n <= 1:\n        return 1\n    return n * fact(n - 1)\n\ndef main() -> int:\n    t = twice(3)\n    for i in range(1, 6):\n        t = t + i * i\n    while t > 50:\n        t = t - 10\n    return add(t, fact(4)) % 100\n";
+    let exe_rust = dir.join(format!("selfhost-cg-rs-{}.exe", std::process::id()));
+    aoxn::build_exe(src, &exe_rust, true).expect("rust reference compile failed");
+    let out_rust = Command::new(&exe_rust).output().expect("failed to run rust reference");
+    let _ = std::fs::remove_file(&exe_rust);
+
+    assert_eq!(out_self.status.code(), Some(65));
+    assert_eq!(out_rust.status.code(), out_self.status.code());
 }
 
 

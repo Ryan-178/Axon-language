@@ -1,0 +1,805 @@
+# Aoxn code generator, written in Aoxn (self-hosting stage 4, first slice).
+#
+# Drives the LLVM-C API through `extern def` (pointers pass as int) and emits
+# a native object file for the type-checked AST from typecheck.ax.
+#
+# Slice-1 scope: int/void functions, int locals, arithmetic and comparisons,
+# if/else, while, for-range, break/continue, direct calls (including generic
+# instances routed through call_node/call_fni). Strings, floats, bool locals,
+# structs, arrays and builtins are rejected with a "codegen:" diagnostic —
+# later slices extend coverage.
+#
+# Write-back discipline: every helper returns the updated Gen.
+
+import "../stdlib/stdlib.ax"
+import "lexer.ax"
+import "parser.ax"
+import "typecheck.ax"
+
+# ---- LLVM-C FFI ----
+
+extern def LLVMContextCreate() -> int
+extern def LLVMContextDispose(ctx: int)
+extern def LLVMModuleCreateWithNameInContext(name: string, ctx: int) -> int
+extern def LLVMDisposeModule(m: int)
+extern def LLVMInt1TypeInContext(ctx: int) -> int
+extern def LLVMInt32TypeInContext(ctx: int) -> int
+extern def LLVMInt64TypeInContext(ctx: int) -> int
+extern def LLVMFunctionType(ret: int, params: int, count: int, varargs: int) -> int
+extern def LLVMAddFunction(m: int, name: string, fnty: int) -> int
+extern def LLVMAppendBasicBlockInContext(ctx: int, f: int, name: string) -> int
+extern def LLVMCreateBuilderInContext(ctx: int) -> int
+extern def LLVMDisposeBuilder(b: int)
+extern def LLVMPositionBuilderAtEnd(b: int, bb: int)
+extern def LLVMPositionBuilderBefore(b: int, instr: int)
+extern def LLVMGetInsertBlock(b: int) -> int
+extern def LLVMGetFirstInstruction(bb: int) -> int
+extern def LLVMGetBasicBlockTerminator(bb: int) -> int
+extern def LLVMConstInt(ty: int, val: int, sign: int) -> int
+extern def LLVMBuildAlloca(b: int, ty: int, name: string) -> int
+extern def LLVMBuildLoad2(b: int, ty: int, ptr: int, name: string) -> int
+extern def LLVMBuildStore(b: int, v: int, ptr: int) -> int
+extern def LLVMBuildAdd(b: int, l: int, r: int, name: string) -> int
+extern def LLVMBuildSub(b: int, l: int, r: int, name: string) -> int
+extern def LLVMBuildMul(b: int, l: int, r: int, name: string) -> int
+extern def LLVMBuildSDiv(b: int, l: int, r: int, name: string) -> int
+extern def LLVMBuildSRem(b: int, l: int, r: int, name: string) -> int
+extern def LLVMBuildNot(b: int, v: int, name: string) -> int
+extern def LLVMBuildICmp(b: int, pred: int, l: int, r: int, name: string) -> int
+extern def LLVMBuildSelect(b: int, cond: int, a: int, b2: int, name: string) -> int
+extern def LLVMBuildBr(b: int, bb: int)
+extern def LLVMBuildCondBr(b: int, cond: int, t: int, f: int)
+extern def LLVMBuildCall2(b: int, fnty: int, f: int, args: int, n: int, name: string) -> int
+extern def LLVMBuildRet(b: int, v: int)
+extern def LLVMBuildRetVoid(b: int)
+extern def LLVMBuildUnreachable(b: int)
+extern def LLVMBuildTrunc(b: int, v: int, ty: int, name: string) -> int
+extern def LLVMGetParam(f: int, i: int) -> int
+extern def LLVMGetNamedFunction(m: int, name: string) -> int
+extern def LLVMInitializeX86TargetInfo()
+extern def LLVMInitializeX86Target()
+extern def LLVMInitializeX86TargetMC()
+extern def LLVMInitializeX86AsmPrinter()
+extern def LLVMGetDefaultTargetTriple() -> string
+extern def LLVMSetTarget(m: int, triple: string)
+extern def LLVMGetTargetFromTriple(triple: string, target: int, err: int) -> int
+extern def LLVMCreateTargetMachine(t: int, triple: string, cpu: string, feat: string, level: int, reloc: int, cmodel: int) -> int
+extern def LLVMDisposeTargetMachine(tm: int)
+extern def LLVMCreateTargetDataLayout(tm: int) -> int
+extern def LLVMSetModuleDataLayout(m: int, dl: int)
+extern def LLVMCreatePassBuilderOptions() -> int
+extern def LLVMRunPasses(m: int, passes: string, tm: int, opts: int) -> int
+extern def LLVMDisposePassBuilderOptions(o: int)
+extern def LLVMTargetMachineEmitToFile(tm: int, m: int, path: string, codegen: int, err: int) -> int
+extern def LLVMVerifyModule(m: int, mode: int, msg: int) -> int
+
+# LLVMCodeGenFileType: assembly = 0, object = 1; pass levels: aggressive = 3
+def CG_OBJECT() -> int:
+    return 1
+
+def CG_O3() -> int:
+    return 3
+
+# LLVMIntPredicate
+def ICMP_EQ() -> int:
+    return 32
+
+def ICMP_NE() -> int:
+    return 33
+
+def ICMP_SGT() -> int:
+    return 38
+
+def ICMP_SGE() -> int:
+    return 39
+
+def ICMP_SLT() -> int:
+    return 40
+
+def ICMP_SLE() -> int:
+    return 41
+
+# expression result kinds
+def RK_INT() -> int:
+    return 0
+
+def RK_BOOL() -> int:
+    return 1
+
+def RK_VOID() -> int:
+    return 2
+
+# ---- generator state ----
+
+struct Gen:
+    c: CState
+    ctx: int
+    module: int
+    builder: int
+    i1: int
+    i32: int
+    i64: int
+    fn_ref: Vec        # fni -> LLVMValueRef
+    fn_llty: Vec       # fni -> LLVMTypeRef
+    entry: Vec         # fni -> entry basic block
+    cur_fni: int
+    loc_name: Vec
+    loc_slot: Vec
+    loop_cont: Vec
+    loop_after: Vec
+    err: int
+    errmsg: string
+    rv: int            # expression result value
+    rk: int            # expression result kind
+    term: int          # current block is terminated
+
+def gerr(g: Gen, msg: string) -> Gen:
+    if g.err == 0:
+        g.err = 1
+        g.errmsg = msg
+    return g
+
+def gen_new(c: CState) -> Gen:
+    g = Gen(
+        c=c,
+        ctx=LLVMContextCreate(),
+        module=0,
+        builder=0,
+        i1=0,
+        i32=0,
+        i64=0,
+        fn_ref=vec_new(),
+        fn_llty=vec_new(),
+        entry=vec_new(),
+        cur_fni=-1,
+        loc_name=vec_new(),
+        loc_slot=vec_new(),
+        loop_cont=vec_new(),
+        loop_after=vec_new(),
+        err=0,
+        errmsg="",
+        rv=0,
+        rk=0,
+        term=0,
+    )
+    g.module = LLVMModuleCreateWithNameInContext("aoxn", g.ctx)
+    g.i1 = LLVMInt1TypeInContext(g.ctx)
+    g.i32 = LLVMInt32TypeInContext(g.ctx)
+    g.i64 = LLVMInt64TypeInContext(g.ctx)
+    g.builder = LLVMCreateBuilderInContext(g.ctx)
+    i = 0
+    while i < c.fn_name.len:
+        g.fn_ref = vec_push(g.fn_ref, 0)
+        g.fn_llty = vec_push(g.fn_llty, 0)
+        g.entry = vec_push(g.entry, 0)
+        i = i + 1
+    return g
+
+# ---- helpers ----
+
+def ty_ll(g: Gen, ty: int) -> int:
+    t = ty_tag(g.c, ty)
+    if t == TY_INT():
+        return g.i64
+    if t == TY_VOID():
+        return 0
+    return -1
+
+def local_slot(g: Gen, name: string) -> int:
+    i = g.loc_name.len - 1
+    while i >= 0:
+        if as_string(vec_get(g.loc_name, i)) == name:
+            return vec_get(g.loc_slot, i)
+        i = i - 1
+    return 0
+
+def add_bb(g: Gen, fname: string) -> int:
+    return LLVMAppendBasicBlockInContext(g.ctx, vec_get(g.fn_ref, g.cur_fni), fname)
+
+def pos(g: Gen, bb: int) -> Gen:
+    LLVMPositionBuilderAtEnd(g.builder, bb)
+    g.term = 0
+    g.rv = 0
+    return g
+
+# allocate in the entry block (allocas must not sit inside loops)
+def alloca_entry(g: Gen, ty: int, name: string) -> int:
+    cur = LLVMGetInsertBlock(g.builder)
+    entry = vec_get(g.entry, g.cur_fni)
+    first = LLVMGetFirstInstruction(entry)
+    if first != 0:
+        LLVMPositionBuilderBefore(g.builder, first)
+    slot = LLVMBuildAlloca(g.builder, ty, name)
+    LLVMPositionBuilderAtEnd(g.builder, cur)
+    return slot
+
+def emit_arith(g: Gen, op: int, l: int, r: int) -> int:
+    if op == OP_ADD():
+        return LLVMBuildAdd(g.builder, l, r, "add")
+    if op == OP_SUB():
+        return LLVMBuildSub(g.builder, l, r, "sub")
+    if op == OP_MUL():
+        return LLVMBuildMul(g.builder, l, r, "mul")
+    if op == OP_DIV():
+        return LLVMBuildSDiv(g.builder, l, r, "div")
+    if op == OP_MOD():
+        return LLVMBuildSRem(g.builder, l, r, "mod")
+    return 0
+
+def cmp_pred(op: int) -> int:
+    if op == OP_EQ():
+        return ICMP_EQ()
+    if op == OP_NE():
+        return ICMP_NE()
+    if op == OP_LT():
+        return ICMP_SLT()
+    if op == OP_LE():
+        return ICMP_SLE()
+    if op == OP_GT():
+        return ICMP_SGT()
+    return ICMP_SGE()
+
+# ---- declarations ----
+
+def declare_fn(g: Gen, fni: int, node: int) -> Gen:
+    name = as_string(vec_get(g.c.fn_name, fni))
+    is_extern = node_ival(g.c.p, node)
+    ret_ty = vec_get(g.c.fn_ret, fni)
+    rll = ty_ll(g, ret_ty)
+    if rll == -1:
+        return gerr(g, "codegen: function '" + name + "' has an unsupported return type")
+    np = vec_get(g.c.fn_nparam, fni)
+    buf = 0
+    if np > 0:
+        buf = malloc(np * 8)
+        k = 0
+        while k < np:
+            pty = sig_param_ty(g.c, fni, k)
+            pll = ty_ll(g, pty)
+            if pll == -1:
+                return gerr(g, "codegen: function '" + name + "' has an unsupported parameter type")
+            store_i64(buf + k * 8, pll)
+            k = k + 1
+    fnty = LLVMFunctionType(rll, buf, np, 0)
+    sym = name
+    if name == "main":
+        sym = "aoxn.main"
+    ref = LLVMAddFunction(g.module, sym, fnty)
+    entry = 0
+    if is_extern == 0:
+        entry = LLVMAppendBasicBlockInContext(g.ctx, ref, "entry")
+    vec_set(g.fn_ref, fni, ref)
+    vec_set(g.fn_llty, fni, fnty)
+    vec_set(g.entry, fni, entry)
+    return g
+
+# ---- expressions ----
+
+def emit_expr(g: Gen, e: int) -> Gen:
+    if g.err == 1:
+        return g
+    t = node_tag(g.c.p, e)
+    if t == N_INT():
+        g.rv = LLVMConstInt(g.i64, node_ival(g.c.p, e), 1)
+        g.rk = RK_INT()
+        return g
+    if t == N_BOOL():
+        g.rv = LLVMConstInt(g.i1, node_ival(g.c.p, e), 0)
+        g.rk = RK_BOOL()
+        return g
+    if t == N_VAR():
+        name = node_sval(g.c.p, e)
+        slot = local_slot(g, name)
+        if slot == 0:
+            return gerr(g, "codegen: unknown local '" + name + "'")
+        g.rv = LLVMBuildLoad2(g.builder, g.i64, slot, name)
+        g.rk = RK_INT()
+        return g
+    if t == N_UNARY():
+        op = node_ival(g.c.p, e)
+        g = emit_expr(g, node_child(g.c.p, e))
+        if g.err == 1:
+            return g
+        if op == OP_NEG():
+            if g.rk != RK_INT():
+                return gerr(g, "codegen: unary '-' expects int")
+            zero = LLVMConstInt(g.i64, 0, 1)
+            g.rv = LLVMBuildSub(g.builder, zero, g.rv, "neg")
+            g.rk = RK_INT()
+            return g
+        if op == OP_NOT():
+            if g.rk != RK_BOOL():
+                return gerr(g, "codegen: '!' expects bool")
+            g.rv = LLVMBuildNot(g.builder, g.rv, "not")
+            g.rk = RK_BOOL()
+            return g
+        return gerr(g, "codegen: unsupported unary operator")
+    if t == N_BINARY():
+        return emit_binary(g, e)
+    if t == N_CALL():
+        return emit_call(g, e)
+    return gerr(g, "codegen: unsupported expression (tag " + str(t) + ")")
+
+def emit_binary(g: Gen, e: int) -> Gen:
+    op = node_ival(g.c.p, e)
+    lhs = node_child(g.c.p, e)
+    rhs = node_next(g.c.p, lhs)
+    if op == OP_AND() or op == OP_OR():
+        return gerr(g, "codegen: 'and'/'or' are not supported yet")
+    g = emit_expr(g, lhs)
+    if g.err == 1:
+        return g
+    lv = g.rv
+    lk = g.rk
+    g = emit_expr(g, rhs)
+    if g.err == 1:
+        return g
+    rv = g.rv
+    rk = g.rk
+    if op == OP_EQ() or op == OP_NE() or op == OP_LT() or op == OP_LE() or op == OP_GT() or op == OP_GE():
+        if lk != rk:
+            return gerr(g, "codegen: comparison operands must share a kind")
+        if lk == RK_INT():
+            g.rv = LLVMBuildICmp(g.builder, cmp_pred(op), lv, rv, "cmp")
+        else:
+            # bool equality as int comparison of the i1 values
+            pred = ICMP_EQ()
+            if op == OP_NE():
+                pred = ICMP_NE()
+            elif op != OP_EQ():
+                return gerr(g, "codegen: bool ordering is not supported")
+            g.rv = LLVMBuildICmp(g.builder, pred, lv, rv, "cmp")
+        g.rk = RK_BOOL()
+        return g
+    if lk != RK_INT() or rk != RK_INT():
+        return gerr(g, "codegen: arithmetic requires int operands")
+    g.rv = emit_arith(g, op, lv, rv)
+    if g.rv == 0:
+        return gerr(g, "codegen: unsupported binary operator")
+    g.rk = RK_INT()
+    return g
+
+def emit_call(g: Gen, e: int) -> Gen:
+    # generic calls already have their instance routed by the checker
+    fni = -1
+    i = 0
+    while i < g.c.call_node.len:
+        if vec_get(g.c.call_node, i) == e:
+            fni = vec_get(g.c.call_fni, i)
+        i = i + 1
+    name = node_sval(g.c.p, e)
+    if fni == -1:
+        fni = sig_index(g.c, name)
+    if fni == -1:
+        return gerr(g, "codegen: call to undefined function '" + name + "'")
+    np = vec_get(g.c.fn_nparam, fni)
+    buf = 0
+    if np > 0:
+        buf = malloc(np * 8)
+    k = 0
+    a = node_child(g.c.p, e)
+    while a != -1 and g.err == 0:
+        pty = sig_param_ty(g.c, fni, k)
+        if ty_tag(g.c, pty) != TY_INT():
+            return gerr(g, "codegen: only int call arguments are supported yet")
+        g = emit_expr(g, node_child(g.c.p, a))
+        if g.err == 1:
+            return g
+        if g.rk != RK_INT():
+            return gerr(g, "codegen: int argument expected in call to '" + name + "'")
+        store_i64(buf + k * 8, g.rv)
+        k = k + 1
+        a = node_next(g.c.p, a)
+    if k != np:
+        return gerr(g, "codegen: wrong number of arguments for '" + name + "'")
+    ref = vec_get(g.fn_ref, fni)
+    fnty = vec_get(g.fn_llty, fni)
+    r = LLVMBuildCall2(g.builder, fnty, ref, buf, np, "")
+    rty = vec_get(g.c.fn_ret, fni)
+    if ty_tag(g.c, rty) == TY_VOID():
+        g.rk = RK_VOID()
+    else:
+        g.rk = RK_INT()
+    g.rv = r
+    return g
+
+# ---- statements ----
+
+def emit_stmt(g: Gen, stmt: int) -> Gen:
+    if g.err == 1:
+        return g
+    if g.term == 1:
+        return g
+    t = node_tag(g.c.p, stmt)
+    if t == N_BLOCK():
+        return emit_block(g, stmt)
+    if t == N_LET():
+        return emit_let(g, stmt)
+    if t == N_ASSIGN():
+        return emit_assign(g, stmt)
+    if t == N_EXPRSTMT():
+        g = emit_expr(g, node_child(g.c.p, stmt))
+        return g
+    if t == N_RETURN():
+        return emit_return(g, stmt)
+    if t == N_IF():
+        return emit_if(g, stmt)
+    if t == N_WHILE():
+        return emit_while(g, stmt)
+    if t == N_FOR():
+        return emit_for(g, stmt)
+    if t == N_BREAK():
+        if g.loop_after.len == 0:
+            return gerr(g, "codegen: break outside of a loop")
+        LLVMBuildBr(g.builder, vec_get(g.loop_after, g.loop_after.len - 1))
+        g.term = 1
+        return g
+    if t == N_CONTINUE():
+        if g.loop_cont.len == 0:
+            return gerr(g, "codegen: continue outside of a loop")
+        LLVMBuildBr(g.builder, vec_get(g.loop_cont, g.loop_cont.len - 1))
+        g.term = 1
+        return g
+    if t == N_PASS():
+        return g
+    return gerr(g, "codegen: unsupported statement (tag " + str(t) + ")")
+
+def emit_block(g: Gen, block: int) -> Gen:
+    st = node_child(g.c.p, block)
+    while st != -1 and g.err == 0 and g.term == 0:
+        g = emit_stmt(g, st)
+        st = node_next(g.c.p, st)
+    return g
+
+def emit_let(g: Gen, stmt: int) -> Gen:
+    name = node_sval(g.c.p, stmt)
+    value = node_child(g.c.p, stmt)
+    if node_ival(g.c.p, stmt) == 1:
+        tyn = value
+        value = node_next(g.c.p, tyn)
+        c2 = resolve_ty_node(g.c, tyn)
+        if c2.err == 1:
+            g.c = c2
+            g.err = 1
+            g.errmsg = c2.errmsg
+            return g
+        if ty_tag(g.c, c2.r_ty) != TY_INT():
+            return gerr(g, "codegen: only int annotations are supported yet")
+    g = emit_expr(g, value)
+    if g.err == 1:
+        return g
+    if g.rk != RK_INT():
+        return gerr(g, "codegen: only int bindings are supported yet")
+    slot = local_slot(g, name)
+    if slot == 0:
+        slot = alloca_entry(g, g.i64, name)
+        g.loc_name = vec_push(g.loc_name, as_ptr(name))
+        g.loc_slot = vec_push(g.loc_slot, slot)
+    LLVMBuildStore(g.builder, g.rv, slot)
+    return g
+
+def emit_assign(g: Gen, stmt: int) -> Gen:
+    target = node_child(g.c.p, stmt)
+    value = node_next(g.c.p, target)
+    if node_tag(g.c.p, target) != N_VAR():
+        return gerr(g, "codegen: only variable assignment is supported yet")
+    name = node_sval(g.c.p, target)
+    slot = local_slot(g, name)
+    if slot == 0:
+        return gerr(g, "codegen: unknown local '" + name + "'")
+    g = emit_expr(g, value)
+    if g.err == 1:
+        return g
+    if g.rk != RK_INT():
+        return gerr(g, "codegen: only int assignment is supported yet")
+    LLVMBuildStore(g.builder, g.rv, slot)
+    return g
+
+def emit_return(g: Gen, stmt: int) -> Gen:
+    e = node_child(g.c.p, stmt)
+    rty = vec_get(g.c.fn_ret, g.cur_fni)
+    if e == -1:
+        if ty_tag(g.c, rty) != TY_VOID():
+            return gerr(g, "codegen: missing return value")
+        LLVMBuildRetVoid(g.builder)
+        g.term = 1
+        return g
+    if ty_tag(g.c, rty) == TY_VOID():
+        return gerr(g, "codegen: void function cannot return a value")
+    g = emit_expr(g, e)
+    if g.err == 1:
+        return g
+    LLVMBuildRet(g.builder, g.rv)
+    g.term = 1
+    return g
+
+def emit_if(g: Gen, stmt: int) -> Gen:
+    cond = node_child(g.c.p, stmt)
+    then_b = node_next(g.c.p, cond)
+    else_b = node_next(g.c.p, then_b)
+    g = emit_expr(g, cond)
+    if g.err == 1:
+        return g
+    if g.rk != RK_BOOL():
+        return gerr(g, "codegen: 'if' condition must be bool")
+    cv = g.rv
+    then_bb = add_bb(g, "if.then")
+    if else_b == -1:
+        after = add_bb(g, "if.after")
+        LLVMBuildCondBr(g.builder, cv, then_bb, after)
+        g = pos(g, then_bb)
+        g = emit_block(g, then_b)
+        if g.err == 1:
+            return g
+        if g.term == 0:
+            LLVMBuildBr(g.builder, after)
+        return pos(g, after)
+    else_bb = add_bb(g, "if.else")
+    LLVMBuildCondBr(g.builder, cv, then_bb, else_bb)
+    g = pos(g, then_bb)
+    g = emit_block(g, then_b)
+    if g.err == 1:
+        return g
+    then_term = g.term
+    g = pos(g, else_bb)
+    g = emit_block(g, else_b)
+    if g.err == 1:
+        return g
+    else_term = g.term
+    if then_term == 1 and else_term == 1:
+        g.term = 1
+        return g
+    after = add_bb(g, "if.after")
+    if then_term == 0:
+        LLVMPositionBuilderAtEnd(g.builder, then_bb)
+        LLVMBuildBr(g.builder, after)
+    if else_term == 0:
+        LLVMPositionBuilderAtEnd(g.builder, else_bb)
+        LLVMBuildBr(g.builder, after)
+    return pos(g, after)
+
+def emit_while(g: Gen, stmt: int) -> Gen:
+    cond = node_child(g.c.p, stmt)
+    body_b = node_next(g.c.p, cond)
+    cond_bb = add_bb(g, "while.cond")
+    body_bb = add_bb(g, "while.body")
+    after = add_bb(g, "while.after")
+    LLVMBuildBr(g.builder, cond_bb)
+    g = pos(g, cond_bb)
+    g = emit_expr(g, cond)
+    if g.err == 1:
+        return g
+    if g.rk != RK_BOOL():
+        return gerr(g, "codegen: 'while' condition must be bool")
+    LLVMBuildCondBr(g.builder, g.rv, body_bb, after)
+    g.loop_cont = vec_push(g.loop_cont, cond_bb)
+    g.loop_after = vec_push(g.loop_after, after)
+    g = pos(g, body_bb)
+    g = emit_block(g, body_b)
+    g.loop_cont = vec_pop(g.loop_cont)
+    g.loop_after = vec_pop(g.loop_after)
+    if g.err == 1:
+        return g
+    if g.term == 0:
+        LLVMBuildBr(g.builder, cond_bb)
+    return pos(g, after)
+
+def emit_for(g: Gen, stmt: int) -> Gen:
+    if node_ival(g.c.p, stmt) != 1:
+        return gerr(g, "codegen: only range loops are supported yet")
+    var = node_sval(g.c.p, stmt)
+    args = node_child(g.c.p, stmt)
+    start = 0
+    end = 0
+    step = 0
+    nargs = 0
+    a = args
+    while a != -1:
+        if node_tag(g.c.p, a) == N_BLOCK():
+            a = -1
+        else:
+            g = emit_expr(g, a)
+            if g.err == 1:
+                return g
+            if nargs == 0:
+                start = g.rv
+            elif nargs == 1:
+                end = g.rv
+            else:
+                step = g.rv
+            nargs = nargs + 1
+            a = node_next(g.c.p, a)
+    if nargs == 1:
+        start = LLVMConstInt(g.i64, 0, 1)
+        step = LLVMConstInt(g.i64, 1, 1)
+    elif nargs == 2:
+        step = LLVMConstInt(g.i64, 1, 1)
+    if nargs < 1 or nargs > 3:
+        return gerr(g, "codegen: range expects 1 to 3 arguments")
+    i_slot = alloca_entry(g, g.i64, "for.i")
+    LLVMBuildStore(g.builder, start, i_slot)
+    var_slot = alloca_entry(g, g.i64, var)
+    g.loc_name = vec_push(g.loc_name, as_ptr(var))
+    g.loc_slot = vec_push(g.loc_slot, var_slot)
+    header = add_bb(g, "for.cond")
+    body_bb = add_bb(g, "for.body")
+    inc_bb = add_bb(g, "for.inc")
+    after = add_bb(g, "for.after")
+    LLVMBuildBr(g.builder, header)
+    g = pos(g, header)
+    iv = LLVMBuildLoad2(g.builder, g.i64, i_slot, "for.i")
+    step_pos = LLVMBuildICmp(g.builder, ICMP_SGT(), step, LLVMConstInt(g.i64, 0, 1), "for.steppos")
+    lt = LLVMBuildICmp(g.builder, ICMP_SLT(), iv, end, "for.lt")
+    gt = LLVMBuildICmp(g.builder, ICMP_SGT(), iv, end, "for.gt")
+    keep = LLVMBuildSelect(g.builder, step_pos, lt, gt, "for.keep")
+    LLVMBuildCondBr(g.builder, keep, body_bb, after)
+    g.loop_cont = vec_push(g.loop_cont, inc_bb)
+    g.loop_after = vec_push(g.loop_after, after)
+    g = pos(g, body_bb)
+    LLVMBuildStore(g.builder, iv, var_slot)
+    body = node_child(g.c.p, stmt)
+    while node_next(g.c.p, body) != -1:
+        body = node_next(g.c.p, body)
+    g = emit_block(g, body)
+    g.loop_cont = vec_pop(g.loop_cont)
+    g.loop_after = vec_pop(g.loop_after)
+    if g.err == 1:
+        return g
+    if g.term == 0:
+        LLVMBuildBr(g.builder, inc_bb)
+    g = pos(g, inc_bb)
+    iv2 = LLVMBuildLoad2(g.builder, g.i64, i_slot, "for.i")
+    nxt = LLVMBuildAdd(g.builder, iv2, step, "for.next")
+    LLVMBuildStore(g.builder, nxt, i_slot)
+    LLVMBuildBr(g.builder, header)
+    return pos(g, after)
+
+# ---- function bodies ----
+
+def emit_fn(g: Gen, fni: int, node: int) -> Gen:
+    g.cur_fni = fni
+    g.loc_name = vec_new()
+    g.loc_slot = vec_new()
+    g.loop_cont = vec_new()
+    g.loop_after = vec_new()
+    g = pos(g, vec_get(g.entry, fni))
+    ref = vec_get(g.fn_ref, fni)
+    k = 0
+    kid = node_child(g.c.p, node)
+    body = -1
+    while kid != -1:
+        t = node_tag(g.c.p, kid)
+        if t == N_BLOCK():
+            body = kid
+        elif t == N_PARAM():
+            pname = node_sval(g.c.p, kid)
+            pty = sig_param_ty(g.c, fni, k)
+            if ty_tag(g.c, pty) != TY_INT():
+                return gerr(g, "codegen: only int parameters are supported yet")
+            slot = alloca_entry(g, g.i64, pname)
+            LLVMBuildStore(g.builder, LLVMGetParam(ref, k), slot)
+            g.loc_name = vec_push(g.loc_name, as_ptr(pname))
+            g.loc_slot = vec_push(g.loc_slot, slot)
+            k = k + 1
+        kid = node_next(g.c.p, kid)
+    if body == -1:
+        return gerr(g, "codegen: malformed function body")
+    g = emit_block(g, body)
+    if g.err == 1:
+        return g
+    if g.term == 0:
+        rty = vec_get(g.c.fn_ret, fni)
+        if ty_tag(g.c, rty) == TY_VOID():
+            LLVMBuildRetVoid(g.builder)
+        else:
+            LLVMBuildUnreachable(g.builder)
+        g.term = 1
+    return g
+
+# ---- program ----
+
+def gen_program(g: Gen) -> Gen:
+    c = g.c
+    root = c.p.root
+    # declare concrete + extern functions
+    ch = node_child(c.p, root)
+    while ch != -1 and g.err == 0:
+        t = node_tag(c.p, ch)
+        if (t == N_FN() or t == N_EXTERN()) and is_generic_fn(c, ch) == 0:
+            name = node_sval(c.p, ch)
+            fni = sig_index(c, name)
+            if fni != -1:
+                g = declare_fn(g, fni, ch)
+        ch = node_next(c.p, ch)
+    # declare monomorphized instances
+    i = 0
+    while i < c.inst_fni.len and g.err == 0:
+        g = declare_fn(g, vec_get(c.inst_fni, i), vec_get(c.inst_node, i))
+        i = i + 1
+    if g.err == 1:
+        return g
+    # C entry wrapper (declared before user bodies, like the Rust codegen)
+    main_fni = sig_index(c, "main")
+    if main_fni == -1:
+        return gerr(g, "codegen: program has no 'main'")
+    main_ty = LLVMFunctionType(g.i32, 0, 0, 0)
+    wrapper = LLVMAddFunction(g.module, "main", main_ty)
+    wbb = LLVMAppendBasicBlockInContext(g.ctx, wrapper, "entry")
+    g = pos(g, wbb)
+    g.cur_fni = main_fni
+    call = LLVMBuildCall2(g.builder, vec_get(g.fn_llty, main_fni), vec_get(g.fn_ref, main_fni), 0, 0, "")
+    rty = vec_get(c.fn_ret, main_fni)
+    if ty_tag(c, rty) == TY_INT():
+        v = LLVMBuildTrunc(g.builder, call, g.i32, "exitcode")
+        LLVMBuildRet(g.builder, v)
+    else:
+        LLVMBuildRet(g.builder, LLVMConstInt(g.i32, 0, 0))
+    # bodies: concrete then instances
+    ch = node_child(c.p, root)
+    while ch != -1 and g.err == 0:
+        t = node_tag(c.p, ch)
+        if t == N_FN() and is_generic_fn(c, ch) == 0:
+            name = node_sval(c.p, ch)
+            fni = sig_index(c, name)
+            if fni != -1:
+                g = emit_fn(g, fni, ch)
+        ch = node_next(c.p, ch)
+    i = 0
+    while i < c.inst_fni.len and g.err == 0:
+        g = emit_fn(g, vec_get(c.inst_fni, i), vec_get(c.inst_node, i))
+        i = i + 1
+    return g
+
+def gen_emit_object(g: Gen, out_path: string) -> Gen:
+    if g.err == 1:
+        return g
+    # verify before touching the target machine
+    msg_slot = malloc(8)
+    store_i64(msg_slot, 0)
+    if LLVMVerifyModule(g.module, 1, msg_slot) != 0:
+        mptr = load_i64(msg_slot)
+        if mptr != 0:
+            return gerr(g, "codegen: module verification failed: " + as_string(mptr))
+        return gerr(g, "codegen: module verification failed")
+    triple = LLVMGetDefaultTargetTriple()
+    LLVMSetTarget(g.module, triple)
+    LLVMInitializeX86TargetInfo()
+    LLVMInitializeX86Target()
+    LLVMInitializeX86TargetMC()
+    LLVMInitializeX86AsmPrinter()
+    tslot = malloc(8)
+    store_i64(tslot, 0)
+    eslot = malloc(8)
+    store_i64(eslot, 0)
+    if LLVMGetTargetFromTriple(triple, tslot, eslot) != 0:
+        eptr = load_i64(eslot)
+        if eptr != 0:
+            return gerr(g, "codegen: cannot resolve target: " + as_string(eptr))
+        return gerr(g, "codegen: cannot resolve target")
+    tm = LLVMCreateTargetMachine(load_i64(tslot), triple, "", "", CG_O3(), 0, 0)
+    if tm == 0:
+        return gerr(g, "codegen: cannot create target machine")
+    dl = LLVMCreateTargetDataLayout(tm)
+    LLVMSetModuleDataLayout(g.module, dl)
+    opts = LLVMCreatePassBuilderOptions()
+    perr = LLVMRunPasses(g.module, "default<O3>", tm, opts)
+    LLVMDisposePassBuilderOptions(opts)
+    if perr != 0:
+        return gerr(g, "codegen: optimization pipeline failed: " + as_string(perr))
+    eslot2 = malloc(8)
+    store_i64(eslot2, 0)
+    if LLVMTargetMachineEmitToFile(tm, g.module, out_path, CG_OBJECT(), eslot2) != 0:
+        eptr2 = load_i64(eslot2)
+        if eptr2 != 0:
+            return gerr(g, "codegen: cannot emit object: " + as_string(eptr2))
+        return gerr(g, "codegen: cannot emit object file '" + out_path + "'")
+    LLVMDisposeTargetMachine(tm)
+    return g
+
+def gen_dispose(g: Gen) -> Gen:
+    if g.builder != 0:
+        LLVMDisposeBuilder(g.builder)
+    if g.module != 0:
+        LLVMDisposeModule(g.module)
+    LLVMContextDispose(g.ctx)
+    return g

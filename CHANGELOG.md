@@ -3,6 +3,33 @@
 Notable changes to the Aoxn compiler and language. Aoxn follows semver-ish
 minor bumps while pre-1.0: each minor version is a language milestone.
 
+## [0.13.0] - 2026-09-12
+
+### Added
+- **Self-hosting stage 4, first slice: the Aoxn code generator written in
+  Aoxn** (`selfhost/codegen.ax`). Drives the LLVM-C API through `extern def`
+  and emits a native object file from the self-hosted checker's output:
+  int/void functions, int locals, arithmetic and comparisons, `if`/`else`,
+  `while`, `for`-range, `break`/`continue`, direct calls and **monomorphized
+  generic instances** (routed through the checker's `call_node`/`call_fni`).
+  Target setup, `default<O3>`, verification and object emission included.
+- `selfhost/codegen_demo.ax`: parses, checks and code-generates a sample
+  program (generic `twice`, `fact` recursion, loops) to `selfhost_out.obj`.
+- `selfhost_codegen_int_slice` test: builds the demo with `-l LLVM-C`,
+  links its object with clang, runs it and compares the exit code with the
+  Rust compiler's output for the same source (both 65).
+
+### Fixed
+- **Rust codegen literal-temp collision across files** (latent since v0.8
+  imports): per-file parse-time literal ids restart at 0, but `lit_temps`
+  cached hoisted allocas globally by id — an aggregate literal in one file
+  reused an alloca from another function ("Referring to an instruction in
+  another function", LLVM abort). Temps/replication iterators are now keyed
+  by AST node address (as generic call routing already was). Regression test
+  `import_aggregate_literals_across_files`.
+- Codegen type hints for unannotated `load_i64`/`load_u8` (int) and
+  `load_f64` (float) bindings.
+
 ## [0.12.0] - 2026-09-12
 
 ### Added
