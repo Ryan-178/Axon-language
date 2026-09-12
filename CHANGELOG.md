@@ -3,6 +3,27 @@
 Notable changes to the Aoxn compiler and language. Aoxn follows semver-ish
 minor bumps while pre-1.0: each minor version is a language milestone.
 
+## [0.16.0] - 2026-09-12
+
+### Added
+- **Self-hosted codegen: strings.** The Aoxn code generator now handles
+  string literals/params/returns/locals (opaque pointers), `print(string)`,
+  the `len` and `str` builtins (`str(int)` via `snprintf("%lld")`,
+  `str(bool)` via a branch + phi over `true`/`false`), `+` concatenation
+  (`malloc` + `memcpy` + NUL, never freed), and all six string comparisons
+  via `strcmp`. f-strings work end-to-end because the parser already
+  desugars them to `"lit" + str(expr) + ...`.
+- C runtime declarations (`strlen`, `strcmp`, `malloc`, `memcpy`,
+  `snprintf`) are emitted into the module on demand, so a checked program
+  need not declare them.
+- `selfhost_codegen_int_slice` now covers strings: `hello, aoxn!`, `12`,
+  `n=5`, `n squared = 25` — stdout and exit code match the Rust compiler.
+
+### Fixed
+- Self-hosted codegen built pointer arithmetic with `LLVMBuildAdd` (invalid
+  IR: "Invalid operator", verifier crash); mid/end pointers now use GEP
+  byte offsets. Also fixed string bindings being tagged as ints.
+
 ## [0.15.0] - 2026-09-12
 
 ### Added

@@ -3,11 +3,12 @@
 # Drives the LLVM-C API through `extern def` (pointers pass as int) and emits
 # a native object file for the type-checked AST from typecheck.ax.
 #
-# Slice-1 scope: int/bool functions and locals, arithmetic and comparisons,
-# if/else, while, for-range, break/continue, direct calls (including generic
-# instances routed through call_node/call_fni), and print(int/bool). Strings,
-# floats, structs, arrays and other builtins are rejected with a "codegen:"
-# diagnostic — later slices extend coverage.
+# Slice-1 scope: int/bool/string functions and locals, arithmetic and
+# comparisons, string concatenation/comparison, if/else, while, for-range,
+# break/continue, direct calls (including generic instances routed through
+# call_node/call_fni), and print/len/str builtins. Floats, structs, arrays and
+# other builtins are rejected with a "codegen:" diagnostic — later slices
+# extend coverage.
 #
 # Write-back discipline: every helper returns the updated Gen.
 
@@ -23,6 +24,7 @@ extern def LLVMContextDispose(ctx: int)
 extern def LLVMModuleCreateWithNameInContext(name: string, ctx: int) -> int
 extern def LLVMDisposeModule(m: int)
 extern def LLVMInt1TypeInContext(ctx: int) -> int
+extern def LLVMInt8TypeInContext(ctx: int) -> int
 extern def LLVMInt32TypeInContext(ctx: int) -> int
 extern def LLVMInt64TypeInContext(ctx: int) -> int
 extern def LLVMFunctionType(ret: int, params: int, count: int, varargs: int) -> int
@@ -46,6 +48,7 @@ extern def LLVMBuildSDiv(b: int, l: int, r: int, name: string) -> int
 extern def LLVMBuildSRem(b: int, l: int, r: int, name: string) -> int
 extern def LLVMBuildNot(b: int, v: int, name: string) -> int
 extern def LLVMBuildICmp(b: int, pred: int, l: int, r: int, name: string) -> int
+extern def LLVMBuildGEP2(b: int, ty: int, ptr: int, indices: int, n: int, name: string) -> int
 extern def LLVMBuildSelect(b: int, cond: int, a: int, b2: int, name: string) -> int
 extern def LLVMBuildBr(b: int, bb: int)
 extern def LLVMBuildCondBr(b: int, cond: int, t: int, f: int)
@@ -56,6 +59,10 @@ extern def LLVMBuildUnreachable(b: int)
 extern def LLVMBuildTrunc(b: int, v: int, ty: int, name: string) -> int
 extern def LLVMBuildGlobalStringPtr(b: int, s: string, name: string) -> int
 extern def LLVMPointerTypeInContext(ctx: int, addrspace: int) -> int
+extern def LLVMBuildPhi(b: int, ty: int, name: string) -> int
+extern def LLVMAddIncoming(phi: int, vals: int, bbs: int, n: int)
+extern def strlen(s: string) -> int
+extern def strcmp(a: string, b: string) -> int
 extern def LLVMGetParam(f: int, i: int) -> int
 extern def LLVMGetNamedFunction(m: int, name: string) -> int
 extern def LLVMInitializeX86TargetInfo()
@@ -111,6 +118,9 @@ def RK_BOOL() -> int:
 def RK_VOID() -> int:
     return 2
 
+def RK_STR() -> int:
+    return 3
+
 # ---- generator state ----
 
 struct Gen:
@@ -119,11 +129,22 @@ struct Gen:
     module: int
     builder: int
     i1: int
+    i8: int
     i32: int
     i64: int
     ptr: int
     printf: int
     printf_ty: int
+    snprintf: int
+    snprintf_ty: int
+    rt_strlen: int
+    rt_strlen_ty: int
+    rt_strcmp: int
+    rt_strcmp_ty: int
+    rt_malloc: int
+    rt_malloc_ty: int
+    rt_memcpy: int
+    rt_memcpy_ty: int
     fn_ref: Vec        # fni -> LLVMValueRef
     fn_llty: Vec       # fni -> LLVMTypeRef
     entry: Vec         # fni -> entry basic block
@@ -152,11 +173,22 @@ def gen_new(c: CState) -> Gen:
         module=0,
         builder=0,
         i1=0,
+        i8=0,
         i32=0,
         i64=0,
         ptr=0,
         printf=0,
         printf_ty=0,
+        snprintf=0,
+        snprintf_ty=0,
+        rt_strlen=0,
+        rt_strlen_ty=0,
+        rt_strcmp=0,
+        rt_strcmp_ty=0,
+        rt_malloc=0,
+        rt_malloc_ty=0,
+        rt_memcpy=0,
+        rt_memcpy_ty=0,
         fn_ref=vec_new(),
         fn_llty=vec_new(),
         entry=vec_new(),
@@ -174,6 +206,7 @@ def gen_new(c: CState) -> Gen:
     )
     g.module = LLVMModuleCreateWithNameInContext("aoxn", g.ctx)
     g.i1 = LLVMInt1TypeInContext(g.ctx)
+    g.i8 = LLVMInt8TypeInContext(g.ctx)
     g.i32 = LLVMInt32TypeInContext(g.ctx)
     g.i64 = LLVMInt64TypeInContext(g.ctx)
     g.ptr = LLVMPointerTypeInContext(g.ctx, 0)
@@ -194,6 +227,8 @@ def ty_ll(g: Gen, ty: int) -> int:
         return g.i64
     if t == TY_BOOL():
         return g.i1
+    if t == TY_STR():
+        return g.ptr
     if t == TY_VOID():
         return 0
     return -1
@@ -220,6 +255,8 @@ def tag_kind(tag: int) -> int:
         return RK_INT()
     if tag == TY_BOOL():
         return RK_BOOL()
+    if tag == TY_STR():
+        return RK_STR()
     return -1
 
 # LLVM type for a type-arena *tag* (ty_ll takes an arena index)
@@ -228,7 +265,16 @@ def ll_of_tag(g: Gen, tag: int) -> int:
         return g.i64
     if tag == TY_BOOL():
         return g.i1
+    if tag == TY_STR():
+        return g.ptr
     return 0
+
+# call a declared function by name (externs are declared before bodies)
+def call_by_name(g: Gen, name: string, args: int, n: int) -> int:
+    fni = sig_index(g.c, name)
+    if fni == -1:
+        return 0
+    return LLVMBuildCall2(g.builder, vec_get(g.fn_llty, fni), vec_get(g.fn_ref, fni), args, n, "")
 
 def get_printf(g: Gen) -> Gen:
     if g.printf != 0:
@@ -241,6 +287,112 @@ def get_printf(g: Gen) -> Gen:
 
 def fmt_ptr(g: Gen, s: string) -> int:
     return LLVMBuildGlobalStringPtr(g.builder, s, ".fmt")
+
+def get_snprintf(g: Gen) -> Gen:
+    if g.snprintf != 0:
+        return g
+    params = malloc(24)
+    store_i64(params, g.ptr)
+    store_i64(params + 8, g.i64)
+    store_i64(params + 16, g.ptr)
+    g.snprintf_ty = LLVMFunctionType(g.i32, params, 3, 1)
+    g.snprintf = LLVMAddFunction(g.module, "snprintf", g.snprintf_ty)
+    return g
+
+# C runtime declarations emitted into the module on demand (a checked program
+# need not declare them itself). Existing declarations are reused.
+def get_rt(g: Gen, which: int) -> Gen:
+    if which == 1:
+        if g.rt_strlen != 0:
+            return g
+        p = malloc(8)
+        store_i64(p, g.ptr)
+        g.rt_strlen_ty = LLVMFunctionType(g.i64, p, 1, 0)
+        g.rt_strlen = LLVMGetNamedFunction(g.module, "strlen")
+        if g.rt_strlen == 0:
+            g.rt_strlen = LLVMAddFunction(g.module, "strlen", g.rt_strlen_ty)
+        return g
+    if which == 2:
+        if g.rt_strcmp != 0:
+            return g
+        p = malloc(16)
+        store_i64(p, g.ptr)
+        store_i64(p + 8, g.ptr)
+        g.rt_strcmp_ty = LLVMFunctionType(g.i32, p, 2, 0)
+        g.rt_strcmp = LLVMGetNamedFunction(g.module, "strcmp")
+        if g.rt_strcmp == 0:
+            g.rt_strcmp = LLVMAddFunction(g.module, "strcmp", g.rt_strcmp_ty)
+        return g
+    if which == 3:
+        if g.rt_malloc != 0:
+            return g
+        p = malloc(8)
+        store_i64(p, g.i64)
+        g.rt_malloc_ty = LLVMFunctionType(g.ptr, p, 1, 0)
+        g.rt_malloc = LLVMGetNamedFunction(g.module, "malloc")
+        if g.rt_malloc == 0:
+            g.rt_malloc = LLVMAddFunction(g.module, "malloc", g.rt_malloc_ty)
+        return g
+    if g.rt_memcpy != 0:
+        return g
+    p = malloc(24)
+    store_i64(p, g.ptr)
+    store_i64(p + 8, g.ptr)
+    store_i64(p + 16, g.i64)
+    g.rt_memcpy_ty = LLVMFunctionType(g.i64, p, 3, 0)
+    g.rt_memcpy = LLVMGetNamedFunction(g.module, "memcpy")
+    if g.rt_memcpy == 0:
+        g.rt_memcpy = LLVMAddFunction(g.module, "memcpy", g.rt_memcpy_ty)
+    return g
+
+def call_strlen(g: Gen, s: int) -> int:
+    g = get_rt(g, 1)
+    p = malloc(8)
+    store_i64(p, s)
+    return LLVMBuildCall2(g.builder, g.rt_strlen_ty, g.rt_strlen, p, 1, "str.len")
+
+# malloc(len1+len2+1) + two copies + NUL (strings are never freed)
+def emit_str_concat(g: Gen, l: int, r: int) -> Gen:
+    ll = call_strlen(g, l)
+    rl = call_strlen(g, r)
+    sum = LLVMBuildAdd(g.builder, ll, rl, "str.sum")
+    total = LLVMBuildAdd(g.builder, sum, LLVMConstInt(g.i64, 1, 0), "str.cap")
+    g = get_rt(g, 3)
+    ma = malloc(8)
+    store_i64(ma, total)
+    buf = LLVMBuildCall2(g.builder, g.rt_malloc_ty, g.rt_malloc, ma, 1, "str.buf")
+    g = get_rt(g, 4)
+    cp = malloc(24)
+    store_i64(cp, buf)
+    store_i64(cp + 8, l)
+    store_i64(cp + 16, ll)
+    LLVMBuildCall2(g.builder, g.rt_memcpy_ty, g.rt_memcpy, cp, 3, "")
+    idx = malloc(8)
+    store_i64(idx, ll)
+    mid = LLVMBuildGEP2(g.builder, g.i8, buf, idx, 1, "str.mid")
+    cp2 = malloc(24)
+    store_i64(cp2, mid)
+    store_i64(cp2 + 8, r)
+    store_i64(cp2 + 16, rl)
+    LLVMBuildCall2(g.builder, g.rt_memcpy_ty, g.rt_memcpy, cp2, 3, "")
+    idx2 = malloc(8)
+    store_i64(idx2, sum)
+    endp = LLVMBuildGEP2(g.builder, g.i8, buf, idx2, 1, "str.end")
+    LLVMBuildStore(g.builder, LLVMConstInt(g.i8, 0, 0), endp)
+    g.rv = buf
+    g.rk = RK_STR()
+    return g
+
+# lexicographic comparison via strcmp
+def emit_str_cmp(g: Gen, op: int, l: int, r: int) -> Gen:
+    g = get_rt(g, 2)
+    ca = malloc(16)
+    store_i64(ca, l)
+    store_i64(ca + 8, r)
+    res = LLVMBuildCall2(g.builder, g.rt_strcmp_ty, g.rt_strcmp, ca, 2, "str.cmp")
+    g.rv = LLVMBuildICmp(g.builder, cmp_pred(op), res, LLVMConstInt(g.i32, 0, 0), "cmp")
+    g.rk = RK_BOOL()
+    return g
 
 def add_bb(g: Gen, fname: string) -> int:
     return LLVMAppendBasicBlockInContext(g.ctx, vec_get(g.fn_ref, g.cur_fni), fname)
@@ -336,6 +488,10 @@ def emit_expr(g: Gen, e: int) -> Gen:
         g.rv = LLVMConstInt(g.i1, node_ival(g.c.p, e), 0)
         g.rk = RK_BOOL()
         return g
+    if t == N_STR():
+        g.rv = LLVMBuildGlobalStringPtr(g.builder, node_sval(g.c.p, e), ".str")
+        g.rk = RK_STR()
+        return g
     if t == N_VAR():
         name = node_sval(g.c.p, e)
         slot = local_slot(g, name)
@@ -345,6 +501,9 @@ def emit_expr(g: Gen, e: int) -> Gen:
         if tag == TY_BOOL():
             g.rv = LLVMBuildLoad2(g.builder, g.i1, slot, name)
             g.rk = RK_BOOL()
+        elif tag == TY_STR():
+            g.rv = LLVMBuildLoad2(g.builder, g.ptr, slot, name)
+            g.rk = RK_STR()
         else:
             g.rv = LLVMBuildLoad2(g.builder, g.i64, slot, name)
             g.rk = RK_INT()
@@ -393,6 +552,8 @@ def emit_binary(g: Gen, e: int) -> Gen:
     if op == OP_EQ() or op == OP_NE() or op == OP_LT() or op == OP_LE() or op == OP_GT() or op == OP_GE():
         if lk != rk:
             return gerr(g, "codegen: comparison operands must share a kind")
+        if lk == RK_STR():
+            return emit_str_cmp(g, op, lv, rv)
         if lk == RK_INT():
             g.rv = LLVMBuildICmp(g.builder, cmp_pred(op), lv, rv, "cmp")
         else:
@@ -405,6 +566,8 @@ def emit_binary(g: Gen, e: int) -> Gen:
             g.rv = LLVMBuildICmp(g.builder, pred, lv, rv, "cmp")
         g.rk = RK_BOOL()
         return g
+    if op == OP_ADD() and lk == RK_STR() and rk == RK_STR():
+        return emit_str_concat(g, lv, rv)
     if lk != RK_INT() or rk != RK_INT():
         return gerr(g, "codegen: arithmetic requires int operands")
     g.rv = emit_arith(g, op, lv, rv)
@@ -417,6 +580,10 @@ def emit_call(g: Gen, e: int) -> Gen:
     name = node_sval(g.c.p, e)
     if name == "print":
         return emit_print(g, e)
+    if name == "len":
+        return emit_len(g, e)
+    if name == "str":
+        return emit_str(g, e)
     # generic calls already have their instance routed by the checker
     fni = -1
     i = 0
@@ -458,6 +625,8 @@ def emit_call(g: Gen, e: int) -> Gen:
         g.rk = RK_VOID()
     elif tag == TY_BOOL():
         g.rk = RK_BOOL()
+    elif tag == TY_STR():
+        g.rk = RK_STR()
     else:
         g.rk = RK_INT()
     g.rv = r
@@ -506,7 +675,81 @@ def emit_print(g: Gen, e: int) -> Gen:
         g.rk = RK_VOID()
         g.rv = 0
         return g
-    return gerr(g, "codegen: print supports int/bool yet")
+    if g.rk == RK_STR():
+        fmt = fmt_ptr(g, "%s\n")
+        args = malloc(16)
+        store_i64(args, fmt)
+        store_i64(args + 8, g.rv)
+        LLVMBuildCall2(g.builder, g.printf_ty, g.printf, args, 2, "")
+        g.rk = RK_VOID()
+        g.rv = 0
+        return g
+    return gerr(g, "codegen: print supports int/bool/string yet")
+
+# len(string) -> strlen; arrays are a later slice
+def emit_len(g: Gen, e: int) -> Gen:
+    a = node_child(g.c.p, e)
+    if a == -1 or node_next(g.c.p, a) != -1:
+        return gerr(g, "codegen: len expects exactly 1 argument")
+    g = emit_expr(g, node_child(g.c.p, a))
+    if g.err == 1:
+        return g
+    if g.rk != RK_STR():
+        return gerr(g, "codegen: len supports strings yet")
+    g.rv = call_strlen(g, g.rv)
+    g.rk = RK_INT()
+    return g
+
+# str(string) identity; str(int) via snprintf("%lld"); str(bool) via phi
+def emit_str(g: Gen, e: int) -> Gen:
+    a = node_child(g.c.p, e)
+    if a == -1 or node_next(g.c.p, a) != -1:
+        return gerr(g, "codegen: str expects exactly 1 argument")
+    g = emit_expr(g, node_child(g.c.p, a))
+    if g.err == 1:
+        return g
+    if g.rk == RK_STR():
+        return g
+    if g.rk == RK_INT():
+        g = get_snprintf(g)
+        g = get_rt(g, 3)
+        ma = malloc(8)
+        store_i64(ma, LLVMConstInt(g.i64, 32, 0))
+        buf = LLVMBuildCall2(g.builder, g.rt_malloc_ty, g.rt_malloc, ma, 1, "str.buf")
+        sargs = malloc(32)
+        store_i64(sargs, buf)
+        store_i64(sargs + 8, LLVMConstInt(g.i64, 32, 0))
+        store_i64(sargs + 16, fmt_ptr(g, "%lld"))
+        store_i64(sargs + 24, g.rv)
+        LLVMBuildCall2(g.builder, g.snprintf_ty, g.snprintf, sargs, 4, "")
+        g.rv = buf
+        g.rk = RK_STR()
+        return g
+    if g.rk == RK_BOOL():
+        v = g.rv
+        tbb = add_bb(g, "str.true")
+        fbb = add_bb(g, "str.false")
+        end = add_bb(g, "str.end")
+        tstr = LLVMBuildGlobalStringPtr(g.builder, "true", ".true")
+        fstr = LLVMBuildGlobalStringPtr(g.builder, "false", ".false")
+        LLVMBuildCondBr(g.builder, v, tbb, fbb)
+        g = pos(g, tbb)
+        LLVMBuildBr(g.builder, end)
+        g = pos(g, fbb)
+        LLVMBuildBr(g.builder, end)
+        g = pos(g, end)
+        phi = LLVMBuildPhi(g.builder, g.ptr, "str.bool")
+        vals = malloc(16)
+        store_i64(vals, tstr)
+        store_i64(vals + 8, fstr)
+        bbs = malloc(16)
+        store_i64(bbs, tbb)
+        store_i64(bbs + 8, fbb)
+        LLVMAddIncoming(phi, vals, bbs, 2)
+        g.rv = phi
+        g.rk = RK_STR()
+        return g
+    return gerr(g, "codegen: str supports int/bool/string yet")
 
 # ---- statements ----
 
@@ -575,13 +818,15 @@ def emit_let(g: Gen, stmt: int) -> Gen:
     g = emit_expr(g, value)
     if g.err == 1:
         return g
-    if g.rk != RK_INT() and g.rk != RK_BOOL():
-        return gerr(g, "codegen: only int/bool bindings are supported yet")
+    if g.rk != RK_INT() and g.rk != RK_BOOL() and g.rk != RK_STR():
+        return gerr(g, "codegen: only int/bool/string bindings are supported yet")
     if ann_tag != -1 and tag_kind(ann_tag) != g.rk:
         return gerr(g, "codegen: annotation does not match the initializer")
     tag = TY_INT()
     if g.rk == RK_BOOL():
         tag = TY_BOOL()
+    elif g.rk == RK_STR():
+        tag = TY_STR()
     slot = local_slot(g, name)
     if slot == 0:
         slot = alloca_entry(g, ll_of_tag(g, tag), name)
