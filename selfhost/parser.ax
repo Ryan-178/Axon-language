@@ -532,6 +532,7 @@ def parse_ty(p: PState) -> PState:
             return perr(p, "expected ';' in array type")
         p = pbump(p)
         ln = 0
+        lname = ""
         if pk(p) == TK_INT():
             ln = tk_ival(p.st, p.idx)
             if ln <= 0:
@@ -548,11 +549,12 @@ def parse_ty(p: PState) -> PState:
             if found == 0:
                 return perr(p, "unknown array length '" + nname + "'")
             ln = -1
+            lname = nname
             p = pbump(p)
         else:
             return perr(p, "expected array length")
         p = peat(p, TK_RBRACKET(), "']'")
-        p = new_node(p, N_TYARRAY(), "", ln)
+        p = new_node(p, N_TYARRAY(), lname, ln)
         n = p.res_node
         p = set_child(p, n, elem)
         p.res_node = n

@@ -1416,8 +1416,61 @@ fn selfhost_typechecker_accepts_and_rejects() {
     assert_eq!(
         String::from_utf8_lossy(&out.stdout),
         "typecheck OK\n\
-         bad program rejected: '+' requires two int or two float operands, found (int, bool)\n"
+         bad program rejected: '+' requires two int or two float operands, found (int, bool)\n\
+         generics OK, instances:\n\
+         \x20 wrap.i\n\
+         \x20 wrap.b\n\
+         \x20 id.i\n\
+         \x20 id.b\n\
+         bad generic call rejected: argument 2 of 'pair' must be T, found bool\n\
+         length generics OK: first.i.?.3\n"
     );
+}
+
+// stage-2 exit criterion: the self-hosted front end (lexer + parser +
+// checker) handles the entire stdlib in one program
+#[test]
+fn selfhost_frontend_handles_stdlib() {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let stdlib = std::fs::read_to_string(manifest.join("stdlib").join("stdlib.ax")).unwrap();
+    let mut checked = stdlib;
+    checked.push_str("\ndef main() -> int:\n    return 0\n");
+    let esc = checked
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n");
+
+    let abs = |p: &str| manifest.join(p).display().to_string().replace('\\', "/");
+    let driver_src = format!(
+        "import \"{}\"\nimport \"{}\"\nimport \"{}\"\n\n\
+         def main() -> int:\n    \
+         src = \"{esc}\"\n    \
+         c = checker_new(lex_state_new(src))\n    \
+         c = check_all(c)\n    \
+         if c.err == 1:\n        \
+         print(\"CHECK ERROR: \" + c.errmsg)\n        \
+         return 1\n    \
+         print(\"stdlib typechecks OK\")\n    \
+         return 0\n",
+        abs("selfhost/lexer.ax"),
+        abs("selfhost/parser.ax"),
+        abs("selfhost/typecheck.ax"),
+    );
+
+    let dir = std::env::temp_dir().join("axon-tests");
+    std::fs::create_dir_all(&dir).unwrap();
+    let driver = dir.join(format!("selfhost-stdlib-{}.ax", std::process::id()));
+    let exe = dir.join(format!("selfhost-stdlib-{}.exe", std::process::id()));
+    std::fs::write(&driver, driver_src).unwrap();
+
+    aoxn::build_paths_exe(&[driver.display().to_string()], &exe, true)
+        .expect("self-host stdlib checker failed to compile");
+    let out = Command::new(&exe).output().expect("failed to run");
+    let _ = std::fs::remove_file(&exe);
+    let _ = std::fs::remove_file(&driver);
+    assert!(out.status.success(), "self-host stdlib checker crashed: {:?}", out.status.code());
+
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "stdlib typechecks OK\n");
 }
 
 

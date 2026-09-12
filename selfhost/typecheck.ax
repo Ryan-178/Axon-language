@@ -37,6 +37,10 @@ def TY_ARRAY() -> int:
 def TY_STRUCT() -> int:
     return 7
 
+# a generic type parameter (name in t_sname); only inside generic signatures
+def TY_VAR() -> int:
+    return 8
+
 # ---- checker state ----
 
 struct CState:
@@ -47,6 +51,7 @@ struct CState:
     cur_ret: int
     res_ok: int
     r_ty: int
+    r_node: int
     # type arena
     t_tag: Vec
     t_elem: Vec
@@ -71,6 +76,31 @@ struct CState:
     fp_fn: Vec
     fp_name: Vec
     fp_ty: Vec
+    # generic declarations: signatures use TY_VAR for type params and
+    # length -1 for the length parameter N
+    g_name: Vec
+    g_node: Vec
+    g_nparam: Vec
+    g_ret: Vec
+    g_lenname: Vec
+    g_fn: Vec
+    g_pname: Vec
+    g_pty: Vec
+    g_tp: Vec
+    g_tpname: Vec
+    # type params of the generic whose signature is being resolved
+    cur_tps: Vec
+    # unification scratch: type param -> concrete type, N -> int
+    sub_names: Vec
+    sub_tys: Vec
+    sub_len_set: int
+    sub_len_val: int
+    # monomorphized instances
+    inst_names: Vec
+    inst_fni: Vec
+    q_node: Vec
+    call_node: Vec
+    call_fni: Vec
 
 def alloc_ty(c: CState, tag: int, elem: int, ln: int, sname: string) -> CState:
     c.t_tag = vec_push(c.t_tag, tag)
@@ -91,6 +121,7 @@ def checker_new(st0: LexState) -> CState:
         cur_ret=-1,
         res_ok=1,
         r_ty=-1,
+        r_node=-1,
         t_tag=vec_new(),
         t_elem=vec_new(),
         t_len=vec_new(),
@@ -111,6 +142,26 @@ def checker_new(st0: LexState) -> CState:
         fp_fn=vec_new(),
         fp_name=vec_new(),
         fp_ty=vec_new(),
+        g_name=vec_new(),
+        g_node=vec_new(),
+        g_nparam=vec_new(),
+        g_ret=vec_new(),
+        g_lenname=vec_new(),
+        g_fn=vec_new(),
+        g_pname=vec_new(),
+        g_pty=vec_new(),
+        g_tp=vec_new(),
+        g_tpname=vec_new(),
+        cur_tps=vec_new(),
+        sub_names=vec_new(),
+        sub_tys=vec_new(),
+        sub_len_set=0,
+        sub_len_val=0,
+        inst_names=vec_new(),
+        inst_fni=vec_new(),
+        q_node=vec_new(),
+        call_node=vec_new(),
+        call_fni=vec_new(),
     )
     c = alloc_ty(c, TY_INT(), 0, 0, "")
     c.t_int = c.r_ty
@@ -153,6 +204,10 @@ def ty_eq(c: CState, a: int, b: int) -> int:
             return 0
         return ty_eq(c, ty_elem(c, a), ty_elem(c, b))
     if t == TY_STRUCT():
+        if ty_sname(c, a) == ty_sname(c, b):
+            return 1
+        return 0
+    if t == TY_VAR():
         if ty_sname(c, a) == ty_sname(c, b):
             return 1
         return 0
@@ -277,7 +332,7 @@ def resolve_ty_node(c: CState, ty: int) -> CState:
         c.r_ty = c.t_void
     elif t == N_TYARRAY():
         ln = node_ival(c.p, ty)
-        if ln == -1:
+        if ln == -1 and c.cur_tps.len == 0:
             return cerr(c, "array length parameters are only valid inside generic functions")
         c = resolve_ty_node(c, node_child(c.p, ty))
         if c.err == 1:
@@ -286,9 +341,18 @@ def resolve_ty_node(c: CState, ty: int) -> CState:
         c = alloc_ty(c, TY_ARRAY(), elem, ln, "")
     elif t == N_TYSTRUCT():
         name = node_sval(c.p, ty)
-        if struct_known(c, name) == 0:
+        i = 0
+        is_tp = 0
+        while i < c.cur_tps.len:
+            if as_string(vec_get(c.cur_tps, i)) == name:
+                is_tp = 1
+            i = i + 1
+        if is_tp == 1:
+            c = alloc_ty(c, TY_VAR(), 0, 0, name)
+        elif struct_known(c, name) == 1:
+            c = alloc_ty(c, TY_STRUCT(), 0, 0, name)
+        else:
             return cerr(c, "unknown type '" + name + "'")
-        c = alloc_ty(c, TY_STRUCT(), 0, 0, name)
     else:
         return cerr(c, "malformed type annotation")
     c.res_ok = 1
@@ -366,69 +430,194 @@ def collect_structs(c: CState) -> CState:
 
 # ---- signature collection ----
 
+def gen_index(c: CState, name: string) -> int:
+    i = 0
+    while i < c.g_name.len:
+        if as_string(vec_get(c.g_name, i)) == name:
+            return i
+        i = i + 1
+    return -1
+
+def is_generic_fn(c: CState, node: int) -> int:
+    kid = node_child(c.p, node)
+    while kid != -1:
+        if node_tag(c.p, kid) == N_TYPEPARAMS():
+            return 1
+        kid = node_next(c.p, kid)
+    return 0
+
+def first_tp_node(c: CState, node: int) -> int:
+    kid = node_child(c.p, node)
+    while kid != -1:
+        if node_tag(c.p, kid) == N_TYPEPARAMS():
+            return kid
+        kid = node_next(c.p, kid)
+    return -1
+
+# name of the length parameter: the sval of the first [T; N] type node
+def len_name_in_ty(c: CState, ty: int) -> string:
+    if ty == -1:
+        return ""
+    if node_tag(c.p, ty) == N_TYARRAY():
+        if node_ival(c.p, ty) == -1:
+            return node_sval(c.p, ty)
+        return len_name_in_ty(c, node_child(c.p, ty))
+    return ""
+
+def find_len_name(c: CState, node: int) -> string:
+    kid = node_child(c.p, node)
+    while kid != -1:
+        t = node_tag(c.p, kid)
+        if t == N_BLOCK():
+            break
+        if t == N_PARAM():
+            r = len_name_in_ty(c, node_child(c.p, kid))
+        elif t == N_TYPEPARAMS():
+            r = ""
+        else:
+            r = len_name_in_ty(c, kid)
+        if r != "":
+            return r
+        kid = node_next(c.p, kid)
+    return ""
+
+# return type node: the last child for externs, the child before the body
+def ret_node_of(c: CState, node: int) -> int:
+    last = -1
+    kid = node_child(c.p, node)
+    while kid != -1:
+        last = kid
+        kid = node_next(c.p, kid)
+    if last == -1:
+        return -1
+    if node_tag(c.p, last) != N_BLOCK():
+        return last
+    ret = -1
+    kid = node_child(c.p, node)
+    while kid != -1:
+        if node_next(c.p, kid) == last:
+            ret = kid
+        kid = node_next(c.p, kid)
+    return ret
+
 def collect_sigs(c: CState) -> CState:
     root = c.p.root
     ch = node_child(c.p, root)
     while ch != -1 and c.err == 0:
         t = node_tag(c.p, ch)
         if t == N_FN() or t == N_EXTERN():
-            name = node_sval(c.p, ch)
-            is_extern = node_ival(c.p, ch)
-            # generic headers are stage-3 WIP
-            kid = node_child(c.p, ch)
-            while kid != -1:
-                if node_tag(c.p, kid) == N_TYPEPARAMS():
-                    return cerr(c, "generic functions are not supported yet by the self-hosted checker")
-                kid = node_next(c.p, kid)
-            if sig_index(c, name) != -1:
-                return cerr(c, "function '" + name + "' is defined more than once")
-            if struct_known(c, name) == 1:
-                return cerr(c, "'" + name + "' is already defined as a struct")
-            if is_extern == 1 and name == "main":
-                return cerr(c, "'main' cannot be declared extern")
-            fni = c.fn_name.len
-            c.fn_name = vec_push(c.fn_name, as_ptr(name))
-            c.fn_nparam = vec_push(c.fn_nparam, 0)
-            c.fn_ret = vec_push(c.fn_ret, c.t_void)
-            # params
-            pnames = vec_new()
-            np = 0
-            kid = node_child(c.p, ch)
-            while kid != -1 and c.err == 0:
-                if node_tag(c.p, kid) == N_PARAM():
-                    pname = node_sval(c.p, kid)
-                    j = 0
-                    while j < pnames.len:
-                        if as_string(vec_get(pnames, j)) == pname:
-                            return cerr(c, "duplicate parameter '" + pname + "' in function '" + name + "'")
-                        j = j + 1
-                    pnames = vec_push(pnames, as_ptr(pname))
-                    c = resolve_ty_node(c, node_child(c.p, kid))
-                    if c.err == 1:
-                        return c
-                    if ty_tag(c, c.r_ty) == TY_VOID():
-                        return cerr(c, "parameter '" + pname + "' cannot have type void")
-                    c.fp_fn = vec_push(c.fp_fn, fni)
-                    c.fp_name = vec_push(c.fp_name, as_ptr(pname))
-                    c.fp_ty = vec_push(c.fp_ty, c.r_ty)
-                    np = np + 1
-                kid = node_next(c.p, kid)
-            vec_set(c.fn_nparam, fni, np)
-            # return type: the child right before the BLOCK
-            ret_type = -1
-            kid = node_child(c.p, ch)
-            while kid != -1:
-                nxt = node_next(c.p, kid)
-                if nxt != -1 and node_tag(c.p, nxt) == N_BLOCK():
-                    ret_type = kid
-                kid = nxt
-            if ret_type == -1:
-                return cerr(c, "malformed function '" + name + "'")
-            c = resolve_ty_node(c, ret_type)
+            c = collect_one_sig(c, ch)
+        ch = node_next(c.p, ch)
+    return c
+
+def collect_one_sig(c: CState, ch: int) -> CState:
+    name = node_sval(c.p, ch)
+    is_extern = node_ival(c.p, ch)
+    is_generic = is_generic_fn(c, ch)
+    if is_generic == 1:
+        if is_extern == 1:
+            return cerr(c, "extern functions cannot be generic")
+        if name == "main":
+            return cerr(c, "'main' cannot be generic")
+    elif is_extern == 1 and name == "main":
+        return cerr(c, "'main' cannot be declared extern")
+    if sig_index(c, name) != -1 or gen_index(c, name) != -1:
+        return cerr(c, "function '" + name + "' is defined more than once")
+    if struct_known(c, name) == 1:
+        return cerr(c, "'" + name + "' is already defined as a struct")
+
+    c.cur_tps = vec_new()
+    if is_generic == 1:
+        tpn = first_tp_node(c, ch)
+        tp = node_child(c.p, tpn)
+        while tp != -1:
+            c.cur_tps = vec_push(c.cur_tps, as_ptr(node_sval(c.p, tp)))
+            tp = node_next(c.p, tp)
+
+    if is_generic == 1:
+        gi = c.g_name.len
+        c.g_name = vec_push(c.g_name, as_ptr(name))
+        c.g_node = vec_push(c.g_node, ch)
+        c.g_nparam = vec_push(c.g_nparam, 0)
+        c.g_ret = vec_push(c.g_ret, c.t_void)
+        c.g_lenname = vec_push(c.g_lenname, as_ptr(find_len_name(c, ch)))
+        k = 0
+        while k < c.cur_tps.len:
+            c.g_tp = vec_push(c.g_tp, gi)
+            c.g_tpname = vec_push(c.g_tpname, vec_get(c.cur_tps, k))
+            k = k + 1
+        pnames = vec_new()
+        np = 0
+        kid = node_child(c.p, ch)
+        while kid != -1 and c.err == 0:
+            if node_tag(c.p, kid) == N_PARAM():
+                pname = node_sval(c.p, kid)
+                j = 0
+                while j < pnames.len:
+                    if as_string(vec_get(pnames, j)) == pname:
+                        c.cur_tps = vec_new()
+                        return cerr(c, "duplicate parameter '" + pname + "' in function '" + name + "'")
+                    j = j + 1
+                pnames = vec_push(pnames, as_ptr(pname))
+                c = resolve_ty_node(c, node_child(c.p, kid))
+                if c.err == 1:
+                    c.cur_tps = vec_new()
+                    return c
+                if ty_tag(c, c.r_ty) == TY_VOID():
+                    c.cur_tps = vec_new()
+                    return cerr(c, "parameter '" + pname + "' cannot have type void")
+                c.g_fn = vec_push(c.g_fn, gi)
+                c.g_pname = vec_push(c.g_pname, as_ptr(pname))
+                c.g_pty = vec_push(c.g_pty, c.r_ty)
+                np = np + 1
+            kid = node_next(c.p, kid)
+        vec_set(c.g_nparam, gi, np)
+        ret_type = ret_node_of(c, ch)
+        if ret_type == -1:
+            c.cur_tps = vec_new()
+            return cerr(c, "malformed function '" + name + "'")
+        c = resolve_ty_node(c, ret_type)
+        if c.err == 1:
+            c.cur_tps = vec_new()
+            return c
+        vec_set(c.g_ret, gi, c.r_ty)
+        c.cur_tps = vec_new()
+        return c
+
+    fni = c.fn_name.len
+    c.fn_name = vec_push(c.fn_name, as_ptr(name))
+    c.fn_nparam = vec_push(c.fn_nparam, 0)
+    c.fn_ret = vec_push(c.fn_ret, c.t_void)
+    pnames = vec_new()
+    np = 0
+    kid = node_child(c.p, ch)
+    while kid != -1 and c.err == 0:
+        if node_tag(c.p, kid) == N_PARAM():
+            pname = node_sval(c.p, kid)
+            j = 0
+            while j < pnames.len:
+                if as_string(vec_get(pnames, j)) == pname:
+                    return cerr(c, "duplicate parameter '" + pname + "' in function '" + name + "'")
+                j = j + 1
+            pnames = vec_push(pnames, as_ptr(pname))
+            c = resolve_ty_node(c, node_child(c.p, kid))
             if c.err == 1:
                 return c
-            vec_set(c.fn_ret, fni, c.r_ty)
-        ch = node_next(c.p, ch)
+            if ty_tag(c, c.r_ty) == TY_VOID():
+                return cerr(c, "parameter '" + pname + "' cannot have type void")
+            c.fp_fn = vec_push(c.fp_fn, fni)
+            c.fp_name = vec_push(c.fp_name, as_ptr(pname))
+            c.fp_ty = vec_push(c.fp_ty, c.r_ty)
+            np = np + 1
+        kid = node_next(c.p, kid)
+    vec_set(c.fn_nparam, fni, np)
+    ret_type = ret_node_of(c, ch)
+    if ret_type == -1:
+        return cerr(c, "malformed function '" + name + "'")
+    c = resolve_ty_node(c, ret_type)
+    if c.err == 1:
+        return c
+    vec_set(c.fn_ret, fni, c.r_ty)
     return c
 
 # ---- all-paths-return analysis ----
@@ -876,7 +1065,7 @@ def check_call(c: CState, e: int) -> CState:
         bt = ty_tag(c, c.r_ty)
         if bt != TY_INT() and bt != TY_STR():
             return cerr(c, "load_u8 base must be int or string")
-        c = check_expr(c, node_next(c.p, node_child(c.p, arg)))
+        c = check_expr(c, node_child(c.p, node_next(c.p, arg)))
         if c.err == 1:
             return c
         if ty_tag(c, c.r_ty) != TY_INT():
@@ -891,7 +1080,7 @@ def check_call(c: CState, e: int) -> CState:
             return c
         if ty_tag(c, c.r_ty) != TY_INT():
             return cerr(c, "store address must be int, found " + ty_display(c, c.r_ty))
-        c = check_expr(c, node_next(c.p, node_child(c.p, arg)))
+        c = check_expr(c, node_child(c.p, node_next(c.p, arg)))
         if c.err == 1:
             return c
         want = TY_INT()
@@ -905,8 +1094,8 @@ def check_call(c: CState, e: int) -> CState:
         if nargs != 3:
             return cerr(c, "store_u8 expects (base: int|string, offset: int, value: int)")
         a1 = node_child(c.p, arg)
-        a2 = node_next(c.p, a1)
-        a3 = node_next(c.p, a2)
+        a2 = node_child(c.p, node_next(c.p, arg))
+        a3 = node_child(c.p, node_next(c.p, node_next(c.p, arg)))
         c = check_expr(c, a1)
         if c.err == 1:
             return c
@@ -951,6 +1140,9 @@ def check_call(c: CState, e: int) -> CState:
     if fni == -1:
         if struct_known(c, name) == 1:
             return check_struct_lit(c, name, arg, nargs)
+        gi = gen_index(c, name)
+        if gi != -1:
+            return instantiate_call(c, gi, e, arg, nargs)
         return cerr(c, "call to undefined function or struct '" + name + "'")
 
     # ---- user function ----
@@ -996,40 +1188,269 @@ def check_struct_lit(c: CState, name: string, arg: int, nargs: int) -> CState:
     c = alloc_ty(c, TY_STRUCT(), 0, 0, name)
     return c
 
+# ---- monomorphization ----
+# A call to a generic function unifies the argument types against the declared
+# (possibly TY_VAR / length -1) parameter types, then clones the declaration's
+# AST with the type parameters and N substituted, registers the instance as a
+# normal signature, and queues its body for checking. p.call_node/p.call_fni
+# route each (cloned) call site to its instance.
+
+def sub_index(c: CState, name: string) -> int:
+    i = 0
+    while i < c.sub_names.len:
+        if as_string(vec_get(c.sub_names, i)) == name:
+            return i
+        i = i + 1
+    return -1
+
+def generic_param_ty(c: CState, gi: int, k: int) -> int:
+    seen = 0
+    i = 0
+    while i < c.g_fn.len:
+        if vec_get(c.g_fn, i) == gi:
+            if seen == k:
+                return vec_get(c.g_pty, i)
+            seen = seen + 1
+        i = i + 1
+    return -1
+
+# unify a declared (possibly generic) type against a concrete type;
+# type params fill sub_names/sub_tys, the length param fills sub_len_*
+def unify(c: CState, declared: int, actual: int) -> CState:
+    c.res_ok = 1
+    dt = ty_tag(c, declared)
+    at = ty_tag(c, actual)
+    if dt == TY_VAR():
+        name = ty_sname(c, declared)
+        k = sub_index(c, name)
+        if k == -1:
+            c.sub_names = vec_push(c.sub_names, as_ptr(name))
+            c.sub_tys = vec_push(c.sub_tys, actual)
+            return c
+        if vec_get(c.sub_tys, k) == actual:
+            return c
+        c.res_ok = 0
+        return c
+    if dt == TY_ARRAY():
+        if at != TY_ARRAY():
+            c.res_ok = 0
+            return c
+        dl = ty_len(c, declared)
+        al = ty_len(c, actual)
+        if dl == -1:
+            if c.sub_len_set == 1:
+                if c.sub_len_val != al:
+                    c.res_ok = 0
+                    return c
+            else:
+                c.sub_len_set = 1
+                c.sub_len_val = al
+        elif dl != al:
+            c.res_ok = 0
+            return c
+        return unify(c, ty_elem(c, declared), ty_elem(c, actual))
+    if dt != at:
+        c.res_ok = 0
+        return c
+    if dt == TY_STRUCT():
+        if ty_sname(c, declared) != ty_sname(c, actual):
+            c.res_ok = 0
+    return c
+
+def type_slug(c: CState, ty: int) -> string:
+    t = ty_tag(c, ty)
+    if t == TY_INT():
+        return "i"
+    if t == TY_FLOAT():
+        return "f"
+    if t == TY_BOOL():
+        return "b"
+    if t == TY_STR():
+        return "s"
+    if t == TY_VOID():
+        return "v"
+    if t == TY_ARRAY():
+        return "a" + type_slug(c, ty_elem(c, ty)) + "x" + str(ty_len(c, ty))
+    if t == TY_VAR():
+        return "?"
+    return "s_" + ty_sname(c, ty)
+
+# deterministic mangled name: name.<slug per type param>.<len if bound>
+def mangle(c: CState, gi: int, name: string) -> string:
+    key = name
+    i = 0
+    while i < c.g_tp.len:
+        if vec_get(c.g_tp, i) == gi:
+            tname = as_string(vec_get(c.g_tpname, i))
+            k = sub_index(c, tname)
+            if k == -1:
+                key = key + ".?"
+            else:
+                key = key + "." + type_slug(c, vec_get(c.sub_tys, k))
+        i = i + 1
+    if c.sub_len_set == 1:
+        key = key + "." + str(c.sub_len_val)
+    return key
+
+# AST node helpers that go through the CState's PState
+def cnode(c: CState, tag: int, sval: string, ival: int) -> CState:
+    c.p = new_node(c.p, tag, sval, ival)
+    c.r_node = c.p.res_node
+    return c
+
+def cset_child(c: CState, idx: int, child: int) -> CState:
+    c.p = set_child(c.p, idx, child)
+    return c
+
+def cappend_child(c: CState, parent: int, child: int) -> CState:
+    c.p = append_child(c.p, parent, child)
+    return c
+
+# build a fresh AST type node from a concrete type arena entry
+def build_ty_node(c: CState, ty: int) -> CState:
+    t = ty_tag(c, ty)
+    if t == TY_INT():
+        return cnode(c, N_TYINT(), "", 0)
+    if t == TY_FLOAT():
+        return cnode(c, N_TYFLOAT(), "", 0)
+    if t == TY_BOOL():
+        return cnode(c, N_TYBOOL(), "", 0)
+    if t == TY_STR():
+        return cnode(c, N_TYSTRING(), "", 0)
+    if t == TY_VOID():
+        return cnode(c, N_TYVOID(), "", 0)
+    if t == TY_STRUCT():
+        return cnode(c, N_TYSTRUCT(), ty_sname(c, ty), 0)
+    if t == TY_ARRAY():
+        c = build_ty_node(c, ty_elem(c, ty))
+        elem = c.r_node
+        c = cnode(c, N_TYARRAY(), "", ty_len(c, ty))
+        n = c.r_node
+        c = cset_child(c, n, elem)
+        c.r_node = n
+        return c
+    return cerr(c, "internal: cannot build a node for a type variable")
+
+# clone a subtree of the generic declaration into fresh arena nodes,
+# substituting type params (via sub_*) and the length param N
+def clone_subtree(c: CState, old: int, len_name: string) -> CState:
+    t = node_tag(c.p, old)
+    if t == N_TYPEPARAMS():
+        c.r_node = -1
+        return c
+    if t == N_TYSTRUCT():
+        name = node_sval(c.p, old)
+        k = sub_index(c, name)
+        if k != -1:
+            return build_ty_node(c, vec_get(c.sub_tys, k))
+        return cnode(c, N_TYSTRUCT(), name, 0)
+    if t == N_TYARRAY():
+        old_ln = node_ival(c.p, old)
+        c = clone_subtree(c, node_child(c.p, old), len_name)
+        elem = c.r_node
+        ln = old_ln
+        if ln == -1 and c.sub_len_set == 1:
+            ln = c.sub_len_val
+        c = cnode(c, N_TYARRAY(), node_sval(c.p, old), ln)
+        n = c.r_node
+        if elem != -1:
+            c = cset_child(c, n, elem)
+        c.r_node = n
+        return c
+    if t == N_VAR() and len_name != "" and c.sub_len_set == 1 and node_sval(c.p, old) == len_name:
+        return cnode(c, N_INT(), str(c.sub_len_val), c.sub_len_val)
+    c = cnode(c, t, node_sval(c.p, old), node_ival(c.p, old))
+    n = c.r_node
+    kid = node_child(c.p, old)
+    while kid != -1:
+        nxt = node_next(c.p, kid)
+        c = clone_subtree(c, kid, len_name)
+        if c.r_node != -1:
+            c = cappend_child(c, n, c.r_node)
+        kid = nxt
+    c.r_node = n
+    return c
+
+def instantiate_call(c: CState, gi: int, e: int, arg: int, nargs: int) -> CState:
+    gname = as_string(vec_get(c.g_name, gi))
+    np = vec_get(c.g_nparam, gi)
+    a = arg
+    while a != -1:
+        if node_sval(c.p, a) != "":
+            return cerr(c, "function '" + gname + "' takes positional arguments only")
+        a = node_next(c.p, a)
+    if nargs != np:
+        return cerr(c, "function '" + gname + "' expects " + str(np) + " argument(s), found " + str(nargs))
+    ats = vec_new()
+    a = arg
+    while a != -1 and c.err == 0:
+        c = check_expr(c, node_child(c.p, a))
+        if c.err == 1:
+            return c
+        ats = vec_push(ats, c.r_ty)
+        a = node_next(c.p, a)
+    c.sub_names = vec_new()
+    c.sub_tys = vec_new()
+    c.sub_len_set = 0
+    c.sub_len_val = 0
+    k = 0
+    a = arg
+    while a != -1 and c.err == 0:
+        declared = generic_param_ty(c, gi, k)
+        actual = vec_get(ats, k)
+        c = unify(c, declared, actual)
+        if c.res_ok == 0:
+            return cerr(c, "argument " + str(k + 1) + " of '" + gname + "' must be " + ty_display(c, declared) + ", found " + ty_display(c, actual))
+        k = k + 1
+        a = node_next(c.p, a)
+    if c.err == 1:
+        return c
+    key = mangle(c, gi, gname)
+    fni = -1
+    i = 0
+    while i < c.inst_names.len:
+        if as_string(vec_get(c.inst_names, i)) == key:
+            fni = vec_get(c.inst_fni, i)
+        i = i + 1
+    if fni == -1:
+        old_fn = vec_get(c.g_node, gi)
+        len_name = as_string(vec_get(c.g_lenname, gi))
+        c = clone_subtree(c, old_fn, len_name)
+        new_fn = c.r_node
+        vec_set(c.p.n_sval, new_fn, as_ptr(key))
+        vec_set(c.p.n_ival, new_fn, 0)
+        c.cur_tps = vec_new()
+        c = collect_one_sig(c, new_fn)
+        if c.err == 1:
+            return c
+        fni = c.fn_name.len - 1
+        c.inst_names = vec_push(c.inst_names, as_ptr(key))
+        c.inst_fni = vec_push(c.inst_fni, fni)
+        c.q_node = vec_push(c.q_node, new_fn)
+    c.call_node = vec_push(c.call_node, e)
+    c.call_fni = vec_push(c.call_fni, fni)
+    c.r_ty = vec_get(c.fn_ret, fni)
+    return c
+
 # ---- function bodies ----
 
 def check_fn_body(c: CState, fn_idx: int) -> CState:
-    # find the body block (last child) and bind params
-    ch = node_child(c.p, fn_idx)
     fname = node_sval(c.p, fn_idx)
-    fni = c.fn_name.len - 1
-    i = 0
-    while i < c.fn_name.len:
-        if as_string(vec_get(c.fn_name, i)) == fname:
-            fni = i
-        i = i + 1
+    fni = sig_index(c, fname)
+    if fni == -1:
+        return cerr(c, "internal: missing signature for '" + fname + "'")
     body = -1
-    kid = ch
+    k = 0
+    kid = node_child(c.p, fn_idx)
     while kid != -1:
         t = node_tag(c.p, kid)
         if t == N_BLOCK():
             body = kid
         elif t == N_PARAM():
             pname = node_sval(c.p, kid)
-            pty = sig_param_ty(c, fni, 0)
-            # find this param's type by walking its own chain index
-            k = 0
-            seen = 0
-            j = 0
-            while j < c.fp_fn.len:
-                if vec_get(c.fp_fn, j) == fni:
-                    if seen == 0 or pname == as_string(vec_get(c.fp_name, j)):
-                        pty = vec_get(c.fp_ty, j)
-                        if pname == as_string(vec_get(c.fp_name, j)):
-                            j = c.fp_fn.len
-                    seen = seen + 1
-                j = j + 1
+            pty = sig_param_ty(c, fni, k)
             c = scope_push(c, pname, pty)
+            k = k + 1
         kid = node_next(c.p, kid)
     if body == -1:
         return cerr(c, "malformed function body")
@@ -1059,9 +1480,17 @@ def check_all(c0: CState) -> CState:
     ch = node_child(c.p, root)
     while ch != -1 and c.err == 0:
         t = node_tag(c.p, ch)
-        if (t == N_FN() or t == N_EXTERN()) and node_ival(c.p, ch) == 0:
+        if (t == N_FN() or t == N_EXTERN()) and node_ival(c.p, ch) == 0 and is_generic_fn(c, ch) == 0:
             c.sc_name = vec_new()
             c.sc_ty = vec_new()
             c = check_fn_body(c, ch)
         ch = node_next(c.p, ch)
+    # drain the monomorphized instances (they can enqueue new ones)
+    qi = 0
+    while qi < c.q_node.len and c.err == 0:
+        node = vec_get(c.q_node, qi)
+        qi = qi + 1
+        c.sc_name = vec_new()
+        c.sc_ty = vec_new()
+        c = check_fn_body(c, node)
     return c

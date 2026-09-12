@@ -23,4 +23,33 @@ def main() -> int:
         print("BUG: ill-typed program accepted")
         return 1
     print("bad program rejected: " + b.errmsg)
+
+    # monomorphization: each generic call creates a concrete instance
+    gsrc = "def id[T](x: T) -> T:\n    return x\ndef wrap[T](x: T) -> T:\n    return id(x)\ndef main() -> int:\n    a = wrap(1)\n    b = wrap(True)\n    return 0\n"
+    g = checker_new(lex_state_new(gsrc))
+    g = check_all(g)
+    if g.err == 1:
+        print("GENERIC TYPE ERROR: " + g.errmsg)
+        return 1
+    print("generics OK, instances:")
+    i = 0
+    while i < g.inst_names.len:
+        print("  " + as_string(vec_get(g.inst_names, i)))
+        i = i + 1
+
+    gbad = "def pair[T](a: T, b: T) -> T:\n    return a\ndef main() -> int:\n    return pair(1, True)\n"
+    gb = checker_new(lex_state_new(gbad))
+    gb = check_all(gb)
+    if gb.err == 0:
+        print("BUG: conflicting generic call accepted")
+        return 1
+    print("bad generic call rejected: " + gb.errmsg)
+
+    nsrc = "def first[T, N](arr: [T; N]) -> T:\n    return arr[0]\ndef main() -> int:\n    a = [10, 20, 30]\n    return first(a)\n"
+    n = checker_new(lex_state_new(nsrc))
+    n = check_all(n)
+    if n.err == 1:
+        print("LENGTH GENERIC ERROR: " + n.errmsg)
+        return 1
+    print("length generics OK: " + as_string(vec_get(n.inst_names, 0)))
     return 0

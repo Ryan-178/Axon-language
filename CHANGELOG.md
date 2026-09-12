@@ -3,6 +3,37 @@
 Notable changes to the Aoxn compiler and language. Aoxn follows semver-ish
 minor bumps while pre-1.0: each minor version is a language milestone.
 
+## [0.12.0] - 2026-09-12
+
+### Added
+- **Self-hosting stage 3: monomorphization in the Aoxn type checker**
+  (`selfhost/typecheck.ax`). Generic declarations are collected with `TY_VAR`
+  type parameters and length-`N` arrays; every generic call unifies argument
+  types against the declared parameter types, builds a deterministic mangled
+  instance name (`id.i`, `first.i.?.3` — same scheme as the Rust compiler),
+  clones the declaration's AST with the type parameters and `N` substituted,
+  registers the instance as a normal signature, and queues its body for
+  checking. Instances are deduplicated (recursive generics terminate) and
+  each cloned call site is routed to its instance via `call_node`/`call_fni`.
+- Self-hosted front-end exit test: the Aoxn lexer + parser + checker now
+  process the **entire `stdlib.ax`** in one program
+  (`selfhost_frontend_handles_stdlib`), plus generic accept/reject cases in
+  `tycheck_demo.ax`.
+
+### Fixed
+- Self-hosted lexer keyword parity: `and` / `or` / `not` now map to `&&` /
+  `||` / `!` (as in the Rust lexer) instead of distinct tokens the parser
+  did not understand — this blocked parsing any real program using them.
+- Self-hosted checker argument indexing for multi-argument builtins
+  (`load_u8`, `store_i64`, `store_f64`, `store_u8`): it followed the sibling
+  chain of the first argument's *value* instead of the argument list,
+  producing bogus "missing expression" errors.
+- Self-hosted checker signature collection: extern declarations were
+  reported as "malformed function" because the return type was assumed to
+  sit before a body block; externs return the last child.
+- Self-hosted parser records the length-parameter name on `[T; N]` nodes so
+  the checker can substitute `N` inside cloned bodies.
+
 ## [0.11.0] - 2026-09-12
 
 ### Added

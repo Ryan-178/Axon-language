@@ -70,15 +70,6 @@ def TK_RETURN() -> int:
 def TK_PASS() -> int:
     return 19
 
-def TK_AND() -> int:
-    return 20
-
-def TK_OR() -> int:
-    return 21
-
-def TK_NOT() -> int:
-    return 22
-
 def TK_TRUE() -> int:
     return 23
 
@@ -322,11 +313,11 @@ def keyword_kind(word: string) -> int:
     if word == "pass":
         return TK_PASS()
     if word == "and":
-        return TK_AND()
+        return TK_ANDAND()
     if word == "or":
-        return TK_OR()
+        return TK_OROR()
     if word == "not":
-        return TK_NOT()
+        return TK_BANG()
     if word == "true":
         return TK_TRUE()
     if word == "True":
@@ -695,12 +686,6 @@ def kind_name(k: int) -> string:
         return "RETURN"
     if k == TK_PASS():
         return "PASS"
-    if k == TK_AND():
-        return "AND"
-    if k == TK_OR():
-        return "OR"
-    if k == TK_NOT():
-        return "NOT"
     if k == TK_TRUE():
         return "TRUE"
     if k == TK_FALSE():

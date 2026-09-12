@@ -1,13 +1,12 @@
 ﻿# Self-Hosting Feasibility Assessment
 
 > Can Aoxn be rewritten in Aoxn? Short answer: **yes — and stages 1–3 are
-> underway**: the Aoxn lexer and parser written in Aoxn live in
-> `selfhost/lexer.ax` and `selfhost/parser.ax` (verified by exact token-stream
-> and AST-dump tests), and the first slice of the Aoxn type checker
-> (`selfhost/typecheck.ax`) accepts/rejects sample programs in CI. The
-> riskiest assumption was validated first by a working proof of concept
-> (`examples/ffi_llvm.ax`): an Aoxn program drives the LLVM-C API through
-> `extern def` and emits real IR.
+> underway**: the Aoxn lexer, parser and type checker written in Aoxn live in
+> `selfhost/` (verified by exact token-stream / AST-dump tests and by
+> checking the entire `stdlib.ax`), and generics are monomorphized just like
+> in the Rust compiler. The riskiest assumption was validated first by a
+> working proof of concept (`examples/ffi_llvm.ax`): an Aoxn program drives
+> the LLVM-C API through `extern def` and emits real IR.
 
 ## 1. Evidence: the FFI proof of concept
 
@@ -110,9 +109,9 @@ stage 3  CI keeps the fixed point green: stage2 builds axonc.ax, outputs match
 ```
 
 Progress: **stages 1 and 2 are complete** — the lexer (`selfhost/lexer.ax`)
-and the parser (`selfhost/parser.ax`) run green in CI, and the parser feeds
-the stage-3 type checker (`selfhost/typecheck.ax`; generics are not supported
-yet). Remaining components: codegen, then the CLI/driver.
+and the parser (`selfhost/parser.ax`) run green in CI, and the stage-3 type
+checker (`selfhost/typecheck.ax`) checks the whole `stdlib.ax` and supports
+generic monomorphization. Remaining components: codegen, then the CLI/driver.
 
 The Rust compiler remains the bootstrap crutch until stage 2 is stable, then
 becomes a test oracle only. The self-hosted compiler does NOT need to link

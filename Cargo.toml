@@ -1,6 +1,6 @@
 ﻿[package]
 name = "aoxn"
-version = "0.11.0"
+version = "0.12.0"
 edition = "2021"
 description = "Axon: AI-native compiled programming language"
 build = "build.rs"
