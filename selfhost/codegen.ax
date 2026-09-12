@@ -3,12 +3,12 @@
 # Drives the LLVM-C API through `extern def` (pointers pass as int) and emits
 # a native object file for the type-checked AST from typecheck.ax.
 #
-# Slice-1 scope: int/bool/string functions and locals, arithmetic and
+# Slice-1 scope: int/float/bool/string functions and locals, arithmetic and
 # comparisons, string concatenation/comparison, if/else, while, for-range,
 # break/continue, direct calls (including generic instances routed through
-# call_node/call_fni), and print/len/str builtins. Floats, structs, arrays and
-# other builtins are rejected with a "codegen:" diagnostic — later slices
-# extend coverage.
+# call_node/call_fni), and print/len/str builtins. Structs, arrays and other
+# builtins are rejected with a "codegen:" diagnostic — later slices extend
+# coverage.
 #
 # Write-back discipline: every helper returns the updated Gen.
 
@@ -27,6 +27,9 @@ extern def LLVMInt1TypeInContext(ctx: int) -> int
 extern def LLVMInt8TypeInContext(ctx: int) -> int
 extern def LLVMInt32TypeInContext(ctx: int) -> int
 extern def LLVMInt64TypeInContext(ctx: int) -> int
+extern def LLVMDoubleTypeInContext(ctx: int) -> int
+extern def LLVMConstReal(ty: int, v: float) -> int
+extern def strtod(s: string, endp: int) -> float
 extern def LLVMFunctionType(ret: int, params: int, count: int, varargs: int) -> int
 extern def LLVMAddFunction(m: int, name: string, fnty: int) -> int
 extern def LLVMAppendBasicBlockInContext(ctx: int, f: int, name: string) -> int
@@ -46,6 +49,12 @@ extern def LLVMBuildSub(b: int, l: int, r: int, name: string) -> int
 extern def LLVMBuildMul(b: int, l: int, r: int, name: string) -> int
 extern def LLVMBuildSDiv(b: int, l: int, r: int, name: string) -> int
 extern def LLVMBuildSRem(b: int, l: int, r: int, name: string) -> int
+extern def LLVMBuildFAdd(b: int, l: int, r: int, name: string) -> int
+extern def LLVMBuildFSub(b: int, l: int, r: int, name: string) -> int
+extern def LLVMBuildFMul(b: int, l: int, r: int, name: string) -> int
+extern def LLVMBuildFDiv(b: int, l: int, r: int, name: string) -> int
+extern def LLVMBuildFNeg(b: int, v: int, name: string) -> int
+extern def LLVMBuildFCmp(b: int, pred: int, l: int, r: int, name: string) -> int
 extern def LLVMBuildNot(b: int, v: int, name: string) -> int
 extern def LLVMBuildICmp(b: int, pred: int, l: int, r: int, name: string) -> int
 extern def LLVMBuildGEP2(b: int, ty: int, ptr: int, indices: int, n: int, name: string) -> int
@@ -108,6 +117,25 @@ def ICMP_SLT() -> int:
 def ICMP_SLE() -> int:
     return 41
 
+# LLVMRealPredicate (ordered)
+def REAL_OEQ() -> int:
+    return 1
+
+def REAL_OGT() -> int:
+    return 2
+
+def REAL_OGE() -> int:
+    return 3
+
+def REAL_OLT() -> int:
+    return 4
+
+def REAL_OLE() -> int:
+    return 5
+
+def REAL_UNE() -> int:
+    return 6
+
 # expression result kinds
 def RK_INT() -> int:
     return 0
@@ -121,6 +149,9 @@ def RK_VOID() -> int:
 def RK_STR() -> int:
     return 3
 
+def RK_FLOAT() -> int:
+    return 4
+
 # ---- generator state ----
 
 struct Gen:
@@ -132,6 +163,7 @@ struct Gen:
     i8: int
     i32: int
     i64: int
+    f64: int
     ptr: int
     printf: int
     printf_ty: int
@@ -176,6 +208,7 @@ def gen_new(c: CState) -> Gen:
         i8=0,
         i32=0,
         i64=0,
+        f64=0,
         ptr=0,
         printf=0,
         printf_ty=0,
@@ -209,6 +242,7 @@ def gen_new(c: CState) -> Gen:
     g.i8 = LLVMInt8TypeInContext(g.ctx)
     g.i32 = LLVMInt32TypeInContext(g.ctx)
     g.i64 = LLVMInt64TypeInContext(g.ctx)
+    g.f64 = LLVMDoubleTypeInContext(g.ctx)
     g.ptr = LLVMPointerTypeInContext(g.ctx, 0)
     g.builder = LLVMCreateBuilderInContext(g.ctx)
     i = 0
@@ -225,6 +259,8 @@ def ty_ll(g: Gen, ty: int) -> int:
     t = ty_tag(g.c, ty)
     if t == TY_INT():
         return g.i64
+    if t == TY_FLOAT():
+        return g.f64
     if t == TY_BOOL():
         return g.i1
     if t == TY_STR():
@@ -253,6 +289,8 @@ def local_tag(g: Gen, name: string) -> int:
 def tag_kind(tag: int) -> int:
     if tag == TY_INT():
         return RK_INT()
+    if tag == TY_FLOAT():
+        return RK_FLOAT()
     if tag == TY_BOOL():
         return RK_BOOL()
     if tag == TY_STR():
@@ -263,6 +301,8 @@ def tag_kind(tag: int) -> int:
 def ll_of_tag(g: Gen, tag: int) -> int:
     if tag == TY_INT():
         return g.i64
+    if tag == TY_FLOAT():
+        return g.f64
     if tag == TY_BOOL():
         return g.i1
     if tag == TY_STR():
@@ -484,6 +524,10 @@ def emit_expr(g: Gen, e: int) -> Gen:
         g.rv = LLVMConstInt(g.i64, node_ival(g.c.p, e), 1)
         g.rk = RK_INT()
         return g
+    if t == N_FLOAT():
+        g.rv = LLVMConstReal(g.f64, strtod(node_sval(g.c.p, e), 0))
+        g.rk = RK_FLOAT()
+        return g
     if t == N_BOOL():
         g.rv = LLVMConstInt(g.i1, node_ival(g.c.p, e), 0)
         g.rk = RK_BOOL()
@@ -504,6 +548,9 @@ def emit_expr(g: Gen, e: int) -> Gen:
         elif tag == TY_STR():
             g.rv = LLVMBuildLoad2(g.builder, g.ptr, slot, name)
             g.rk = RK_STR()
+        elif tag == TY_FLOAT():
+            g.rv = LLVMBuildLoad2(g.builder, g.f64, slot, name)
+            g.rk = RK_FLOAT()
         else:
             g.rv = LLVMBuildLoad2(g.builder, g.i64, slot, name)
             g.rk = RK_INT()
@@ -514,8 +561,12 @@ def emit_expr(g: Gen, e: int) -> Gen:
         if g.err == 1:
             return g
         if op == OP_NEG():
+            if g.rk == RK_FLOAT():
+                g.rv = LLVMBuildFNeg(g.builder, g.rv, "neg")
+                g.rk = RK_FLOAT()
+                return g
             if g.rk != RK_INT():
-                return gerr(g, "codegen: unary '-' expects int")
+                return gerr(g, "codegen: unary '-' expects int or float")
             zero = LLVMConstInt(g.i64, 0, 1)
             g.rv = LLVMBuildSub(g.builder, zero, g.rv, "neg")
             g.rk = RK_INT()
@@ -556,6 +607,8 @@ def emit_binary(g: Gen, e: int) -> Gen:
             return emit_str_cmp(g, op, lv, rv)
         if lk == RK_INT():
             g.rv = LLVMBuildICmp(g.builder, cmp_pred(op), lv, rv, "cmp")
+        elif lk == RK_FLOAT():
+            g.rv = LLVMBuildFCmp(g.builder, fcmp_pred(op), lv, rv, "cmp")
         else:
             # bool equality as int comparison of the i1 values
             pred = ICMP_EQ()
@@ -568,12 +621,41 @@ def emit_binary(g: Gen, e: int) -> Gen:
         return g
     if op == OP_ADD() and lk == RK_STR() and rk == RK_STR():
         return emit_str_concat(g, lv, rv)
+    if lk == RK_FLOAT() and rk == RK_FLOAT():
+        return emit_farith(g, op, lv, rv)
     if lk != RK_INT() or rk != RK_INT():
-        return gerr(g, "codegen: arithmetic requires int operands")
+        return gerr(g, "codegen: arithmetic requires int or float operands")
     g.rv = emit_arith(g, op, lv, rv)
     if g.rv == 0:
         return gerr(g, "codegen: unsupported binary operator")
     g.rk = RK_INT()
+    return g
+
+def fcmp_pred(op: int) -> int:
+    if op == OP_EQ():
+        return REAL_OEQ()
+    if op == OP_NE():
+        return REAL_UNE()
+    if op == OP_LT():
+        return REAL_OLT()
+    if op == OP_LE():
+        return REAL_OLE()
+    if op == OP_GT():
+        return REAL_OGT()
+    return REAL_OGE()
+
+def emit_farith(g: Gen, op: int, l: int, r: int) -> Gen:
+    if op == OP_ADD():
+        g.rv = LLVMBuildFAdd(g.builder, l, r, "fadd")
+    elif op == OP_SUB():
+        g.rv = LLVMBuildFSub(g.builder, l, r, "fsub")
+    elif op == OP_MUL():
+        g.rv = LLVMBuildFMul(g.builder, l, r, "fmul")
+    elif op == OP_DIV():
+        g.rv = LLVMBuildFDiv(g.builder, l, r, "fdiv")
+    else:
+        return gerr(g, "codegen: '%' is not defined for floats")
+    g.rk = RK_FLOAT()
     return g
 
 def emit_call(g: Gen, e: int) -> Gen:
@@ -627,6 +709,8 @@ def emit_call(g: Gen, e: int) -> Gen:
         g.rk = RK_BOOL()
     elif tag == TY_STR():
         g.rk = RK_STR()
+    elif tag == TY_FLOAT():
+        g.rk = RK_FLOAT()
     else:
         g.rk = RK_INT()
     g.rv = r
@@ -643,6 +727,15 @@ def emit_print(g: Gen, e: int) -> Gen:
     g = get_printf(g)
     if g.rk == RK_INT():
         fmt = fmt_ptr(g, "%lld\n")
+        args = malloc(16)
+        store_i64(args, fmt)
+        store_i64(args + 8, g.rv)
+        LLVMBuildCall2(g.builder, g.printf_ty, g.printf, args, 2, "")
+        g.rk = RK_VOID()
+        g.rv = 0
+        return g
+    if g.rk == RK_FLOAT():
+        fmt = fmt_ptr(g, "%f\n")
         args = malloc(16)
         store_i64(args, fmt)
         store_i64(args + 8, g.rv)
@@ -684,7 +777,7 @@ def emit_print(g: Gen, e: int) -> Gen:
         g.rk = RK_VOID()
         g.rv = 0
         return g
-    return gerr(g, "codegen: print supports int/bool/string yet")
+    return gerr(g, "codegen: print supports int/float/bool/string yet")
 
 # len(string) -> strlen; arrays are a later slice
 def emit_len(g: Gen, e: int) -> Gen:
@@ -710,16 +803,21 @@ def emit_str(g: Gen, e: int) -> Gen:
         return g
     if g.rk == RK_STR():
         return g
-    if g.rk == RK_INT():
+    if g.rk == RK_INT() or g.rk == RK_FLOAT():
+        cap = 32
+        fmt = "%lld"
+        if g.rk == RK_FLOAT():
+            cap = 64
+            fmt = "%f"
         g = get_snprintf(g)
         g = get_rt(g, 3)
         ma = malloc(8)
-        store_i64(ma, LLVMConstInt(g.i64, 32, 0))
+        store_i64(ma, LLVMConstInt(g.i64, cap, 0))
         buf = LLVMBuildCall2(g.builder, g.rt_malloc_ty, g.rt_malloc, ma, 1, "str.buf")
         sargs = malloc(32)
         store_i64(sargs, buf)
-        store_i64(sargs + 8, LLVMConstInt(g.i64, 32, 0))
-        store_i64(sargs + 16, fmt_ptr(g, "%lld"))
+        store_i64(sargs + 8, LLVMConstInt(g.i64, cap, 0))
+        store_i64(sargs + 16, fmt_ptr(g, fmt))
         store_i64(sargs + 24, g.rv)
         LLVMBuildCall2(g.builder, g.snprintf_ty, g.snprintf, sargs, 4, "")
         g.rv = buf
@@ -818,8 +916,8 @@ def emit_let(g: Gen, stmt: int) -> Gen:
     g = emit_expr(g, value)
     if g.err == 1:
         return g
-    if g.rk != RK_INT() and g.rk != RK_BOOL() and g.rk != RK_STR():
-        return gerr(g, "codegen: only int/bool/string bindings are supported yet")
+    if g.rk != RK_INT() and g.rk != RK_BOOL() and g.rk != RK_STR() and g.rk != RK_FLOAT():
+        return gerr(g, "codegen: only int/float/bool/string bindings are supported yet")
     if ann_tag != -1 and tag_kind(ann_tag) != g.rk:
         return gerr(g, "codegen: annotation does not match the initializer")
     tag = TY_INT()
@@ -827,6 +925,8 @@ def emit_let(g: Gen, stmt: int) -> Gen:
         tag = TY_BOOL()
     elif g.rk == RK_STR():
         tag = TY_STR()
+    elif g.rk == RK_FLOAT():
+        tag = TY_FLOAT()
     slot = local_slot(g, name)
     if slot == 0:
         slot = alloca_entry(g, ll_of_tag(g, tag), name)

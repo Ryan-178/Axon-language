@@ -112,10 +112,10 @@ Progress: **stages 1–3 are complete** — the lexer (`selfhost/lexer.ax`), the
 parser (`selfhost/parser.ax`) and the type checker (`selfhost/typecheck.ax`,
 with generic monomorphization) run green in CI, including a full check of
 `stdlib.ax`. Multi-file imports are resolved in Aoxn too (`selfhost/load.ax`).
-Stage 4: `selfhost/codegen.ax` emits native objects for int/bool/string
+Stage 4: `selfhost/codegen.ax` emits native objects for int/float/bool/string
 programs through LLVM-C (print/len/str, f-strings), and `selfhost/driver.ax`
-closes the loop — source file -> executable via clang. Remaining:
-floats/structs/arrays, then broader codegen coverage.
+closes the loop — source file -> executable via clang. Remaining: structs and
+arrays, then broader codegen coverage.
 
 The Rust compiler remains the bootstrap crutch until stage 2 is stable, then
 becomes a test oracle only. The self-hosted compiler does NOT need to link

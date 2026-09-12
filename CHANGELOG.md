@@ -3,6 +3,17 @@
 Notable changes to the Aoxn compiler and language. Aoxn follows semver-ish
 minor bumps while pre-1.0: each minor version is a language milestone.
 
+## [0.18.0] - 2026-09-12
+
+### Added
+- **Self-hosted codegen: floats (f64).** The Aoxn code generator now handles
+  float literals (`strtod` + `LLVMConstReal`), float locals/params/returns,
+  `+ - * /` via `fadd/fsub/fmul/fdiv`, unary `-` via `fneg`, all six ordered
+  comparisons (`fcmp` OEQ/UNE/OLT/OLE/OGT/OGE), `print(float)` (`"%f\n"`),
+  and `str(float)` via `snprintf("%f")`. The codegen test now covers
+  `4.000000`, `2.000000`, `-1.500000`, `f=1.500000`, `half f = 0.750000`
+  with exact stdout parity against the Rust compiler.
+
 ## [0.17.0] - 2026-09-12
 
 ### Added
