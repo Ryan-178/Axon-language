@@ -1575,6 +1575,70 @@ fn selfhost_codegen_int_slice() {
     assert_eq!(out_rust.status.code(), out_self.status.code());
 }
 
+// ---- self-hosting: the Aoxn-written driver compiles a file end to end ----
+
+#[test]
+fn selfhost_driver_links_hello() {
+    let llvm = llvm_dir().expect("LLVM install not found (set AOXN_LLVM_DIR)");
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let demo = manifest.join("selfhost").join("driver_demo.ax");
+
+    // ASCII fixture dir: the self-hosted loader opens paths with narrow fopen
+    let dir = manifest
+        .join("target")
+        .join(format!("shdriver-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let hello = "def main() -> int:\n    print(\"hello, Aoxn\")\n    return 0\n";
+    std::fs::write(dir.join("hello.ax"), hello).unwrap();
+
+    let exe = dir.join("driver.exe");
+    aoxn::build_paths_opts(
+        &[demo.display().to_string()],
+        &exe,
+        true,
+        &["LLVM-C".to_string()],
+        &[llvm.join("lib").display().to_string()],
+    )
+    .expect("self-host driver demo failed to compile");
+
+    let path = format!(
+        "{};{}",
+        llvm.join("bin").display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let out = Command::new(&exe)
+        .current_dir(&dir)
+        .env("PATH", &path)
+        .output()
+        .expect("failed to run driver demo");
+    assert!(
+        out.status.success(),
+        "driver demo failed: {:?} {}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "driver OK\n");
+
+    // the executable produced by the Aoxn-written pipeline actually runs
+    let produced = dir.join("selfhost_hello.exe");
+    assert!(produced.exists(), "driver did not emit selfhost_hello.exe");
+    let out_self = Command::new(&produced).output().expect("failed to run produced exe");
+
+    // parity: the Rust compiler produces the same output
+    let rust_exe = dir.join("hello_rust.exe");
+    aoxn::build_paths_exe(
+        &[dir.join("hello.ax").display().to_string()],
+        &rust_exe,
+        true,
+    )
+    .expect("rust reference compile failed");
+    let out_rust = Command::new(&rust_exe).output().expect("failed to run rust reference");
+
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(String::from_utf8_lossy(&out_self.stdout), "hello, Aoxn\n");
+    assert_eq!(out_rust.stdout, out_self.stdout);
+}
+
 // ---- self-hosting: multi-file import resolution in the Aoxn front end ----
 
 #[test]

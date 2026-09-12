@@ -1,0 +1,49 @@
+# Aoxn self-hosted driver, written in Aoxn (self-hosting stage 4).
+#
+# Closes the loop: source file -> import-aware load -> strict type check ->
+# LLVM-C codegen -> native object -> clang link -> executable. All stages are
+# implemented in Aoxn (selfhost/*.ax); the driver only orchestrates them and
+# shells out to clang via the stdlib `system` binding.
+#
+# Paths are taken as given and resolved against the current directory.
+
+import "../stdlib/stdlib.ax"
+import "lexer.ax"
+import "parser.ax"
+import "typecheck.ax"
+import "load.ax"
+import "codegen.ax"
+
+struct DriverState:
+    err: int
+    errmsg: string
+
+def driver_err(d: DriverState, msg: string) -> DriverState:
+    if d.err == 0:
+        d.err = 1
+        d.errmsg = msg
+    return d
+
+def compile_file(src_path: string, obj_path: string, exe_path: string) -> DriverState:
+    d = DriverState(err=0, errmsg="")
+    ls = load_program(src_path)
+    if ls.err == 1:
+        return driver_err(d, ls.errmsg)
+    c = checker_state()
+    c.p = ls.p
+    c = check_all(c)
+    if c.err == 1:
+        return driver_err(d, c.errmsg)
+    g = gen_new(c)
+    g = gen_program(g)
+    if g.err == 1:
+        return driver_err(d, g.errmsg)
+    g = gen_emit_object(g, obj_path)
+    if g.err == 1:
+        return driver_err(d, g.errmsg)
+    gen_dispose(g)
+    cmd = "clang " + obj_path + " -o " + exe_path + " -Wl,/STACK:8388608"
+    rc = system(cmd)
+    if rc != 0:
+        return driver_err(d, "link failed (exit " + str(rc) + "): " + cmd)
+    return d

@@ -3,6 +3,19 @@
 Notable changes to the Aoxn compiler and language. Aoxn follows semver-ish
 minor bumps while pre-1.0: each minor version is a language milestone.
 
+## [0.17.0] - 2026-09-12
+
+### Added
+- **Self-hosting: the driver closes the loop in Aoxn.** `selfhost/driver.ax`
+  orchestrates the Aoxn-written stages — import-aware `load_program` -> strict
+  `check_all` -> LLVM-C codegen -> object emission -> `system("clang ...")`
+  link — producing a native executable from a real `.ax` file. No Rust
+  compiler involvement at runtime.
+- `selfhost/driver_demo.ax` compiles `hello.ax` end to end; the
+  `selfhost_driver_links_hello` test builds the demo, runs it, then executes
+  the produced exe and compares its stdout with the Rust compiler's build
+  (`hello, Aoxn`). 89 tests green.
+
 ## [0.16.0] - 2026-09-12
 
 ### Added

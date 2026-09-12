@@ -1,0 +1,13 @@
+# Self-hosting driver demo: the Aoxn-written compiler compiles hello.ax to a
+# native executable. Run from a directory containing hello.ax; clang must be
+# on PATH (the link step shells out via system()).
+#   aoxn run selfhost\driver_demo.ax -l LLVM-C -L "C:\Program Files\LLVM\lib"
+import "driver.ax"
+
+def main() -> int:
+    d = compile_file("hello.ax", "selfhost_hello.obj", "selfhost_hello.exe")
+    if d.err == 1:
+        print("DRIVER ERROR: " + d.errmsg)
+        return 1
+    print("driver OK")
+    return 0
