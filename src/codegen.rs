@@ -773,6 +773,12 @@ impl Gen {
                 if eff == "str" {
                     return Ok(Type::Str);
                 }
+                if eff == "as_string" {
+                    return Ok(Type::Str);
+                }
+                if eff == "as_ptr" {
+                    return Ok(Type::Int);
+                }
                 Err(format!("internal error: unknown call '{eff}' in type hint"))
             }
             Expr::Unary { expr, .. } => self.type_hint(expr, locals),

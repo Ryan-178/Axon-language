@@ -181,6 +181,9 @@ def TK_BANG() -> int:
 def TK_ERROR() -> int:
     return 56
 
+def TK_SEMI() -> int:
+    return 57
+
 # ---- helpers ----
 
 def chr_str(c: int) -> string:
@@ -419,11 +422,12 @@ def lex_all(st0: LexState) -> LexState:
                 else:
                     break
             word = str_slice(st.src, start, st.pos - start)
-            # f-string: `f"` or `F"` 鈥?emit a raw FSTR token and skip the
-            # literal; the parser stage re-lexes the interpolation parts
+            # f-string: `f"` or `F"` — emit a raw FSTR token carrying the
+            # literal source (quotes stripped); the parser stage re-lexes the
+            # interpolation parts
             if (word == "f" or word == "F") and cur_byte(st) == 34:
-                st = emit(st, TK_FSTR(), 0, "")
                 st = bump(st)
+                fstart = st.pos
                 fstr_done = 0
                 while fstr_done == 0:
                     fc = cur_byte(st)
@@ -432,13 +436,15 @@ def lex_all(st0: LexState) -> LexState:
                         st.error = 1
                         break
                     if fc == 34:
-                        st = bump(st)
                         fstr_done = 1
                     elif fc == 92:
                         st = bump(st)
                         st = bump(st)
                     else:
                         st = bump(st)
+                raw = str_slice(st.src, fstart, st.pos - fstart)
+                st = bump(st)
+                st = emit(st, TK_FSTR(), 0, raw)
                 continue
             kw = keyword_kind(word)
             if kw == -1:
@@ -544,6 +550,10 @@ def lex_all(st0: LexState) -> LexState:
             continue
         if c == 58:
             st = emit(st, TK_COLON(), 0, "")
+            st = bump(st)
+            continue
+        if c == 59:
+            st = emit(st, TK_SEMI(), 0, "")
             st = bump(st)
             continue
         if c == 43:

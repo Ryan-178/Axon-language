@@ -1,0 +1,1272 @@
+# Aoxn parser, written in Aoxn (self-hosting stage 2).
+#
+# Consumes the token stream from lexer.ax and builds an arena-based AST:
+# every node is an index into parallel Vecs (tag / sval / ival / child /
+# next). Children chain via first-child + next-sibling.
+#
+# Write-back discipline (value semantics!): every function that mutates the
+# parser state returns the updated PState and all call sites assign it back
+# (`p = parse_expr(p)`). Multi-value results travel through p.res_node (the
+# node the call produced) and p.res_vec (a produced Vec); the first error is
+# recorded in p.err and stops the parse.
+
+import "../stdlib/stdlib.ax"
+import "lexer.ax"
+
+# ---- node tags ----
+def N_IMPORT() -> int:
+    return 1
+
+def N_EXTERN() -> int:
+    return 2
+
+def N_FN() -> int:
+    return 3
+
+def N_TYPEPARAMS() -> int:
+    return 4
+
+def N_PARAM() -> int:
+    return 5
+
+def N_BLOCK() -> int:
+    return 6
+
+def N_LET() -> int:
+    return 7
+
+def N_ASSIGN() -> int:
+    return 8
+
+def N_IF() -> int:
+    return 9
+
+def N_WHILE() -> int:
+    return 10
+
+def N_FOR() -> int:
+    return 11
+
+def N_BREAK() -> int:
+    return 12
+
+def N_CONTINUE() -> int:
+    return 13
+
+def N_RETURN() -> int:
+    return 14
+
+def N_PASS() -> int:
+    return 15
+
+def N_STRUCT() -> int:
+    return 16
+
+def N_FIELD() -> int:
+    return 17
+
+def N_EXPRSTMT() -> int:
+    return 18
+
+def N_INT() -> int:
+    return 19
+
+def N_FLOAT() -> int:
+    return 20
+
+def N_STR() -> int:
+    return 21
+
+def N_BOOL() -> int:
+    return 22
+
+def N_VAR() -> int:
+    return 23
+
+def N_CALL() -> int:
+    return 24
+
+def N_ARG() -> int:
+    return 25
+
+def N_INDEX() -> int:
+    return 26
+
+def N_FIELDACCESS() -> int:
+    return 27
+
+def N_UNARY() -> int:
+    return 28
+
+def N_BINARY() -> int:
+    return 29
+
+def N_ARRAYLIT() -> int:
+    return 30
+
+def N_FSTR() -> int:
+    return 31
+
+def N_TYINT() -> int:
+    return 32
+
+def N_TYFLOAT() -> int:
+    return 33
+
+def N_TYBOOL() -> int:
+    return 34
+
+def N_TYSTRING() -> int:
+    return 35
+
+def N_TYVOID() -> int:
+    return 36
+
+def N_TYARRAY() -> int:
+    return 37
+
+def N_TYSTRUCT() -> int:
+    return 38
+
+# binary/unary op codes (match the Rust AST ordering)
+def OP_ADD() -> int:
+    return 1
+
+def OP_SUB() -> int:
+    return 2
+
+def OP_MUL() -> int:
+    return 3
+
+def OP_DIV() -> int:
+    return 4
+
+def OP_MOD() -> int:
+    return 5
+
+def OP_EQ() -> int:
+    return 6
+
+def OP_NE() -> int:
+    return 7
+
+def OP_LT() -> int:
+    return 8
+
+def OP_LE() -> int:
+    return 9
+
+def OP_GT() -> int:
+    return 10
+
+def OP_GE() -> int:
+    return 11
+
+def OP_AND() -> int:
+    return 12
+
+def OP_OR() -> int:
+    return 13
+
+def OP_NEG() -> int:
+    return 20
+
+def OP_NOT() -> int:
+    return 21
+
+# ---- parser state ----
+
+struct PState:
+    st: LexState
+    idx: int
+    lit_id: int
+    err: int
+    errmsg: string
+    root: int
+    res_node: int
+    res_vec: Vec
+    cur_type_params: Vec
+    cur_len_param: string
+    n_tag: Vec
+    n_sval: Vec
+    n_ival: Vec
+    n_child: Vec
+    n_next: Vec
+
+def parser_new(st: LexState) -> PState:
+    return PState(
+        st=st,
+        idx=0,
+        lit_id=0,
+        err=0,
+        errmsg="",
+        root=-1,
+        res_node=-1,
+        res_vec=vec_new(),
+        cur_type_params=vec_new(),
+        cur_len_param="",
+        n_tag=vec_new(),
+        n_sval=vec_new(),
+        n_ival=vec_new(),
+        n_child=vec_new(),
+        n_next=vec_new(),
+    )
+
+def new_node(p: PState, tag: int, sval: string, ival: int) -> PState:
+    p.n_tag = vec_push(p.n_tag, tag)
+    p.n_sval = vec_push(p.n_sval, as_ptr(sval))
+    p.n_ival = vec_push(p.n_ival, ival)
+    p.n_child = vec_push(p.n_child, -1)
+    p.n_next = vec_push(p.n_next, -1)
+    p.res_node = p.n_tag.len - 1
+    return p
+
+def set_child(p: PState, idx: int, child: int) -> PState:
+    vec_set(p.n_child, idx, child)
+    return p
+
+def append_child(p: PState, parent: int, child: int) -> PState:
+    c = vec_get(p.n_child, parent)
+    if c == -1:
+        vec_set(p.n_child, parent, child)
+        return p
+    while vec_get(p.n_next, c) != -1:
+        c = vec_get(p.n_next, c)
+    vec_set(p.n_next, c, child)
+    return p
+
+def node_tag(p: PState, idx: int) -> int:
+    return vec_get(p.n_tag, idx)
+
+def node_sval(p: PState, idx: int) -> string:
+    return as_string(vec_get(p.n_sval, idx))
+
+def node_ival(p: PState, idx: int) -> int:
+    return vec_get(p.n_ival, idx)
+
+def node_child(p: PState, idx: int) -> int:
+    return vec_get(p.n_child, idx)
+
+def node_next(p: PState, idx: int) -> int:
+    return vec_get(p.n_next, idx)
+
+# ---- token helpers ----
+
+def pk(p: PState) -> int:
+    return tk_kind(p.st, p.idx)
+
+def pk2(p: PState) -> int:
+    n = p.idx + 1
+    if n > p.st.kinds.len - 1:
+        n = p.st.kinds.len - 1
+    return tk_kind(p.st, n)
+
+def ppos_line(p: PState) -> int:
+    return tk_line(p.st, p.idx)
+
+def perr(p: PState, msg: string) -> PState:
+    if p.err == 0:
+        p.err = 1
+        p.errmsg = msg
+    return p
+
+def pbump(p: PState) -> PState:
+    if p.idx < p.st.kinds.len - 1:
+        p.idx = p.idx + 1
+    return p
+
+def peat(p: PState, kind: int, what: string) -> PState:
+    if pk(p) == kind:
+        return pbump(p)
+    return perr(p, "expected " + what)
+
+# ---- AST construction convenience ----
+# each constructor stores its node index in p.res_node
+
+def mk_lit_str(p: PState, s: string) -> PState:
+    return new_node(p, N_STR(), s, 0)
+
+def mk_bin(p: PState, op: int, lhs: int, rhs: int) -> PState:
+    p = new_node(p, N_BINARY(), "", op)
+    n = p.res_node
+    p = set_child(p, n, lhs)
+    p = append_child(p, n, rhs)
+    p.res_node = n
+    return p
+
+def mk_call_str(p: PState, name: string, arg: int) -> PState:
+    p = new_node(p, N_CALL(), name, p.lit_id)
+    n = p.res_node
+    p.lit_id = p.lit_id + 1
+    p = new_node(p, N_ARG(), "", 0)
+    a = p.res_node
+    p = set_child(p, a, arg)
+    p = append_child(p, n, a)
+    p.res_node = n
+    return p
+
+# ---- program ----
+
+def parse_program(p: PState) -> PState:
+    p = new_node(p, N_BLOCK(), "program", 0)
+    root = p.res_node
+    while pk(p) == TK_NEWLINE():
+        p = pbump(p)
+    while pk(p) != TK_EOF():
+        if p.err == 1:
+            break
+        k = pk(p)
+        if k == TK_IMPORT():
+            p = parse_import(p)
+        elif k == TK_DEF():
+            p = parse_fn(p, 0)
+        elif k == TK_EXTERN():
+            p = parse_fn(p, 1)
+        elif k == TK_STRUCT():
+            p = parse_struct(p)
+        else:
+            p = perr(p, "expected 'import', 'def' or 'struct' at top level")
+            break
+        if p.err == 0:
+            child = p.res_node
+            p = append_child(p, root, child)
+        while pk(p) == TK_NEWLINE():
+            p = pbump(p)
+    p.root = root
+    return p
+
+def parse_import(p: PState) -> PState:
+    p = new_node(p, N_IMPORT(), "", 0)
+    n = p.res_node
+    p = pbump(p)
+    if pk(p) == TK_STR():
+        p = new_node(p, N_STR(), tk_sval(p.st, p.idx), 0)
+        sn = p.res_node
+        p = set_child(p, n, sn)
+        p = pbump(p)
+    else:
+        p = perr(p, "expected a string path after 'import'")
+    p.res_node = n
+    return p
+
+# ---- declarations ----
+
+def parse_fn(p: PState, is_extern: int) -> PState:
+    tag = N_FN()
+    if is_extern == 1:
+        tag = N_EXTERN()
+    p = pbump(p)
+    if is_extern == 1:
+        p = peat(p, TK_DEF(), "'def' after 'extern'")
+    name = ""
+    if pk(p) == TK_IDENT():
+        name = tk_sval(p.st, p.idx)
+        p = pbump(p)
+    else:
+        p = perr(p, "expected function name")
+        return p
+    p = new_node(p, tag, name, is_extern)
+    n = p.res_node
+
+    # optional generic header: def name[T, N](...)
+    if pk(p) == TK_LBRACKET():
+        p = pbump(p)
+        p = new_node(p, N_TYPEPARAMS(), "", 0)
+        tpn = p.res_node
+        p = append_child(p, n, tpn)
+        p.cur_type_params = vec_new()
+        p.cur_len_param = ""
+        loop_tp = 1
+        while loop_tp == 1:
+            if pk(p) == TK_IDENT():
+                tn = tk_sval(p.st, p.idx)
+                p.cur_type_params = vec_push(p.cur_type_params, as_ptr(tn))
+                p = new_node(p, N_VAR(), tn, 0)
+                tvn = p.res_node
+                p = append_child(p, tpn, tvn)
+                p = pbump(p)
+            else:
+                p = perr(p, "expected type parameter name")
+                p.res_node = n
+                return p
+            if pk(p) == TK_COMMA():
+                p = pbump(p)
+            elif pk(p) == TK_RBRACKET():
+                loop_tp = 0
+                p = pbump(p)
+            else:
+                p = perr(p, "expected ',' or ']' in type parameters")
+                p.res_node = n
+                return p
+
+    p = peat(p, TK_LPAREN(), "'('")
+    if pk(p) != TK_RPAREN():
+        loop_param = 1
+        while loop_param == 1:
+            pname = ""
+            if pk(p) == TK_IDENT():
+                pname = tk_sval(p.st, p.idx)
+                p = pbump(p)
+            else:
+                p = perr(p, "expected parameter name")
+                p.res_node = n
+                return p
+            p = peat(p, TK_COLON(), "':'")
+            p = parse_ty(p)
+            if p.err == 1:
+                p.res_node = n
+                return p
+            ty = p.res_node
+            p = new_node(p, N_PARAM(), pname, 0)
+            pn = p.res_node
+            p = set_child(p, pn, ty)
+            p = append_child(p, n, pn)
+            if pk(p) == TK_COMMA():
+                p = pbump(p)
+                if pk(p) == TK_RPAREN():
+                    loop_param = 0
+            elif pk(p) == TK_RPAREN():
+                loop_param = 0
+            else:
+                p = perr(p, "expected ',' or ')' in parameters")
+                p.res_node = n
+                return p
+    p = peat(p, TK_RPAREN(), "')'")
+
+    p = new_node(p, N_TYVOID(), "", 0)
+    ret = p.res_node
+    if pk(p) == TK_ARROW():
+        p = pbump(p)
+        p = parse_ty(p)
+        if p.err == 1:
+            p.res_node = n
+            return p
+        ret = p.res_node
+    p = append_child(p, n, ret)
+
+    if is_extern == 1:
+        p.res_node = n
+        return p
+    p = parse_block(p)
+    if p.err == 0:
+        body = p.res_node
+        p = append_child(p, n, body)
+    p.cur_type_params = vec_new()
+    p.cur_len_param = ""
+    p.res_node = n
+    return p
+
+def parse_struct(p: PState) -> PState:
+    p = pbump(p)
+    name = ""
+    if pk(p) == TK_IDENT():
+        name = tk_sval(p.st, p.idx)
+        p = pbump(p)
+    else:
+        p = perr(p, "expected struct name")
+        return p
+    p = new_node(p, N_STRUCT(), name, 0)
+    n = p.res_node
+    p = peat(p, TK_COLON(), "':'")
+    p = peat(p, TK_NEWLINE(), "newline after struct header")
+    p = peat(p, TK_INDENT(), "an indented struct body")
+    while pk(p) != TK_DEDENT():
+        if p.err == 1:
+            break
+        if pk(p) == TK_EOF():
+            p = perr(p, "unexpected end of file inside struct body")
+            break
+        fname = ""
+        if pk(p) == TK_IDENT():
+            fname = tk_sval(p.st, p.idx)
+            p = pbump(p)
+        else:
+            p = perr(p, "expected field name")
+            break
+        p = peat(p, TK_COLON(), "':'")
+        p = parse_ty(p)
+        if p.err == 1:
+            break
+        ty = p.res_node
+        p = new_node(p, N_FIELD(), fname, 0)
+        fn = p.res_node
+        p = set_child(p, fn, ty)
+        p = append_child(p, n, fn)
+        if pk(p) == TK_NEWLINE():
+            p = pbump(p)
+    p = pbump(p)  # DEDENT
+    p.res_node = n
+    return p
+
+# ---- types ----
+# N for a generic length is encoded as ival -1
+
+def parse_ty(p: PState) -> PState:
+    k = pk(p)
+    if k == TK_TYINT():
+        p = pbump(p)
+        return new_node(p, N_TYINT(), "", 0)
+    if k == TK_TYFLOAT():
+        p = pbump(p)
+        return new_node(p, N_TYFLOAT(), "", 0)
+    if k == TK_TYBOOL():
+        p = pbump(p)
+        return new_node(p, N_TYBOOL(), "", 0)
+    if k == TK_TYSTRING():
+        p = pbump(p)
+        return new_node(p, N_TYSTRING(), "", 0)
+    if k == TK_TYVOID():
+        p = pbump(p)
+        return new_node(p, N_TYVOID(), "", 0)
+    if k == TK_IDENT():
+        name = tk_sval(p.st, p.idx)
+        p = pbump(p)
+        return new_node(p, N_TYSTRUCT(), name, 0)
+    if k == TK_LBRACKET():
+        p = pbump(p)
+        p = parse_ty(p)
+        if p.err == 1:
+            return p
+        elem = p.res_node
+        if pk(p) != TK_SEMI():
+            return perr(p, "expected ';' in array type")
+        p = pbump(p)
+        ln = 0
+        if pk(p) == TK_INT():
+            ln = tk_ival(p.st, p.idx)
+            if ln <= 0:
+                return perr(p, "array length must be a positive integer")
+            p = pbump(p)
+        elif pk(p) == TK_IDENT():
+            nname = tk_sval(p.st, p.idx)
+            found = 0
+            i = 0
+            while i < p.cur_type_params.len:
+                if as_string(vec_get(p.cur_type_params, i)) == nname:
+                    found = 1
+                i = i + 1
+            if found == 0:
+                return perr(p, "unknown array length '" + nname + "'")
+            ln = -1
+            p = pbump(p)
+        else:
+            return perr(p, "expected array length")
+        p = peat(p, TK_RBRACKET(), "']'")
+        p = new_node(p, N_TYARRAY(), "", ln)
+        n = p.res_node
+        p = set_child(p, n, elem)
+        p.res_node = n
+        return p
+    return perr(p, "expected a type: int | float | bool | string | void | name | [T; N]")
+
+# ---- blocks and statements ----
+
+def parse_block(p: PState) -> PState:
+    p = peat(p, TK_COLON(), "':'")
+    p = new_node(p, N_BLOCK(), "", 0)
+    n = p.res_node
+    if pk(p) == TK_NEWLINE():
+        p = pbump(p)
+        p = peat(p, TK_INDENT(), "an indented block")
+        while pk(p) != TK_DEDENT():
+            if p.err == 1:
+                break
+            if pk(p) == TK_EOF():
+                p = perr(p, "unexpected end of file inside an indented block")
+                break
+            p = parse_stmt(p)
+            if p.err == 0:
+                st = p.res_node
+                p = append_child(p, n, st)
+            if pk(p) == TK_NEWLINE():
+                p = pbump(p)
+        p = pbump(p)  # DEDENT
+        p.res_node = n
+        return p
+    # single-line body: one simple statement
+    p = parse_simple_stmt(p)
+    if p.err == 0:
+        st = p.res_node
+        p = append_child(p, n, st)
+    p = peat(p, TK_NEWLINE(), "newline")
+    p.res_node = n
+    return p
+
+def parse_stmt(p: PState) -> PState:
+    k = pk(p)
+    if k == TK_IF():
+        return parse_if(p)
+    if k == TK_WHILE():
+        p = pbump(p)
+        p = parse_expr(p)
+        if p.err == 1:
+            return p
+        cond = p.res_node
+        p = parse_block(p)
+        if p.err == 1:
+            return p
+        body = p.res_node
+        p = new_node(p, N_WHILE(), "", 0)
+        n = p.res_node
+        p = set_child(p, n, cond)
+        p = append_child(p, n, body)
+        p.res_node = n
+        return p
+    if k == TK_FOR():
+        return parse_for(p)
+    if k == TK_RETURN():
+        p = pbump(p)
+        p = new_node(p, N_RETURN(), "", 0)
+        n = p.res_node
+        if pk(p) != TK_NEWLINE():
+            p = parse_expr(p)
+            if p.err == 0:
+                e = p.res_node
+                p = set_child(p, n, e)
+        p.res_node = n
+        return p
+    if k == TK_BREAK():
+        p = pbump(p)
+        return new_node(p, N_BREAK(), "", 0)
+    if k == TK_CONTINUE():
+        p = pbump(p)
+        return new_node(p, N_CONTINUE(), "", 0)
+    if k == TK_PASS():
+        p = pbump(p)
+        return new_node(p, N_PASS(), "", 0)
+    if k == TK_IDENT():
+        if pk2(p) == TK_COLON():
+            # annotated binding: x: t = e
+            name = tk_sval(p.st, p.idx)
+            p = pbump(p)
+            p = pbump(p)
+            p = parse_ty(p)
+            if p.err == 1:
+                return p
+            ty = p.res_node
+            p = peat(p, TK_ASSIGN(), "'='")
+            p = parse_expr(p)
+            if p.err == 1:
+                return p
+            value = p.res_node
+            p = new_node(p, N_LET(), name, 1)
+            n = p.res_node
+            p = set_child(p, n, ty)
+            p = append_child(p, n, value)
+            p.res_node = n
+            return p
+    # assignment or expression statement
+    p = parse_expr(p)
+    if p.err == 1:
+        return p
+    e = p.res_node
+    if pk(p) == TK_ASSIGN():
+        if is_lvalue(p, e) == 0:
+            return perr(p, "invalid assignment target")
+        p = pbump(p)
+        p = parse_expr(p)
+        if p.err == 1:
+            return p
+        value = p.res_node
+        if node_tag(p, e) == N_VAR():
+            p = new_node(p, N_LET(), node_sval(p, e), 0)
+            n = p.res_node
+            p = set_child(p, n, value)
+            p.res_node = n
+            return p
+        p = new_node(p, N_ASSIGN(), "", 0)
+        n = p.res_node
+        p = set_child(p, n, e)
+        p = append_child(p, n, value)
+        p.res_node = n
+        return p
+    p = new_node(p, N_EXPRSTMT(), "", 0)
+    n = p.res_node
+    p = set_child(p, n, e)
+    p.res_node = n
+    return p
+
+def is_lvalue(p: PState, e: int) -> int:
+    t = node_tag(p, e)
+    if t == N_VAR() or t == N_INDEX() or t == N_FIELDACCESS():
+        return 1
+    return 0
+
+def parse_simple_stmt(p: PState) -> PState:
+    k = pk(p)
+    if k == TK_IF() or k == TK_WHILE() or k == TK_FOR() or k == TK_DEF() or k == TK_STRUCT():
+        return perr(p, "compound statements cannot appear on the same line after ':'")
+    return parse_stmt(p)
+
+def parse_if(p: PState) -> PState:
+    p = pbump(p)
+    p = parse_expr(p)
+    if p.err == 1:
+        return p
+    cond0 = p.res_node
+    p = parse_block(p)
+    if p.err == 1:
+        return p
+    then0 = p.res_node
+
+    # collect elif branches and the final else
+    conds = vec_new()
+    thens = vec_new()
+    conds = vec_push(conds, cond0)
+    thens = vec_push(thens, then0)
+    while pk(p) == TK_ELIF():
+        p = pbump(p)
+        p = parse_expr(p)
+        if p.err == 1:
+            return p
+        c2 = p.res_node
+        p = parse_block(p)
+        if p.err == 1:
+            return p
+        b2 = p.res_node
+        conds = vec_push(conds, c2)
+        thens = vec_push(thens, b2)
+    else_block = -1
+    if pk(p) == TK_ELSE():
+        p = pbump(p)
+        p = parse_block(p)
+        if p.err == 1:
+            return p
+        else_block = p.res_node
+
+    # fold elifs right-assoc: innermost first
+    i = conds.len - 1
+    while i >= 1:
+        p = new_node(p, N_IF(), "", 0)
+        nested = p.res_node
+        p = set_child(p, nested, vec_get(conds, i))
+        p = append_child(p, nested, vec_get(thens, i))
+        if else_block != -1:
+            p = append_child(p, nested, else_block)
+        p = new_node(p, N_BLOCK(), "", 0)
+        wrapper = p.res_node
+        p = append_child(p, wrapper, nested)
+        else_block = wrapper
+        i = i - 1
+
+    p = new_node(p, N_IF(), "", 0)
+    n = p.res_node
+    p = set_child(p, n, vec_get(conds, 0))
+    p = append_child(p, n, vec_get(thens, 0))
+    if else_block != -1:
+        p = append_child(p, n, else_block)
+    p.res_node = n
+    return p
+
+def parse_for(p: PState) -> PState:
+    p = pbump(p)
+    var = ""
+    if pk(p) == TK_IDENT():
+        var = tk_sval(p.st, p.idx)
+        p = pbump(p)
+    else:
+        p = perr(p, "expected loop variable")
+        return p
+    p = peat(p, TK_IN(), "'in'")
+    is_range = 0
+    args = vec_new()
+    if pk(p) == TK_IDENT() and tk_sval(p.st, p.idx) == "range" and pk2(p) == TK_LPAREN():
+        is_range = 1
+        p = pbump(p)
+        p = pbump(p)
+        if pk(p) != TK_RPAREN():
+            loop_args = 1
+            while loop_args == 1:
+                p = parse_expr(p)
+                if p.err == 1:
+                    return p
+                args = vec_push(args, p.res_node)
+                if pk(p) == TK_COMMA():
+                    p = pbump(p)
+                    if pk(p) == TK_RPAREN():
+                        loop_args = 0
+                elif pk(p) == TK_RPAREN():
+                    loop_args = 0
+                else:
+                    p = perr(p, "expected ',' or ')' in range arguments")
+                    return p
+        p = peat(p, TK_RPAREN(), "')'")
+    else:
+        p = parse_expr(p)
+        if p.err == 1:
+            return p
+        args = vec_push(args, p.res_node)
+    p = parse_block(p)
+    if p.err == 1:
+        return p
+    body = p.res_node
+    p = new_node(p, N_FOR(), var, is_range)
+    n = p.res_node
+    i = 0
+    while i < args.len:
+        p = append_child(p, n, vec_get(args, i))
+        i = i + 1
+    p = append_child(p, n, body)
+    p.res_node = n
+    return p
+
+# ---- expressions (precedence climbing) ----
+
+def parse_expr(p: PState) -> PState:
+    return parse_or(p)
+
+def parse_or(p: PState) -> PState:
+    p = parse_and(p)
+    if p.err == 1:
+        return p
+    lhs = p.res_node
+    while pk(p) == TK_OROR() and p.err == 0:
+        p = pbump(p)
+        p = parse_and(p)
+        if p.err == 1:
+            return p
+        rhs = p.res_node
+        p = mk_bin(p, OP_OR(), lhs, rhs)
+        lhs = p.res_node
+    p.res_node = lhs
+    return p
+
+def parse_and(p: PState) -> PState:
+    p = parse_eq(p)
+    if p.err == 1:
+        return p
+    lhs = p.res_node
+    while pk(p) == TK_ANDAND() and p.err == 0:
+        p = pbump(p)
+        p = parse_eq(p)
+        if p.err == 1:
+            return p
+        rhs = p.res_node
+        p = mk_bin(p, OP_AND(), lhs, rhs)
+        lhs = p.res_node
+    p.res_node = lhs
+    return p
+
+def parse_eq(p: PState) -> PState:
+    p = parse_rel(p)
+    if p.err == 1:
+        return p
+    lhs = p.res_node
+    while p.err == 0:
+        k = pk(p)
+        op = 0
+        if k == TK_EQ():
+            op = OP_EQ()
+        elif k == TK_NE():
+            op = OP_NE()
+        else:
+            break
+        p = pbump(p)
+        p = parse_rel(p)
+        if p.err == 1:
+            return p
+        rhs = p.res_node
+        p = mk_bin(p, op, lhs, rhs)
+        lhs = p.res_node
+    p.res_node = lhs
+    return p
+
+def parse_rel(p: PState) -> PState:
+    p = parse_add(p)
+    if p.err == 1:
+        return p
+    lhs = p.res_node
+    while p.err == 0:
+        k = pk(p)
+        op = 0
+        if k == TK_LT():
+            op = OP_LT()
+        elif k == TK_LE():
+            op = OP_LE()
+        elif k == TK_GT():
+            op = OP_GT()
+        elif k == TK_GE():
+            op = OP_GE()
+        else:
+            break
+        p = pbump(p)
+        p = parse_add(p)
+        if p.err == 1:
+            return p
+        rhs = p.res_node
+        p = mk_bin(p, op, lhs, rhs)
+        lhs = p.res_node
+    p.res_node = lhs
+    return p
+
+def parse_add(p: PState) -> PState:
+    p = parse_mul(p)
+    if p.err == 1:
+        return p
+    lhs = p.res_node
+    while p.err == 0:
+        k = pk(p)
+        op = 0
+        if k == TK_PLUS():
+            op = OP_ADD()
+        elif k == TK_MINUS():
+            op = OP_SUB()
+        else:
+            break
+        p = pbump(p)
+        p = parse_mul(p)
+        if p.err == 1:
+            return p
+        rhs = p.res_node
+        p = mk_bin(p, op, lhs, rhs)
+        lhs = p.res_node
+    p.res_node = lhs
+    return p
+
+def parse_mul(p: PState) -> PState:
+    p = parse_unary(p)
+    if p.err == 1:
+        return p
+    lhs = p.res_node
+    while p.err == 0:
+        k = pk(p)
+        op = 0
+        if k == TK_STAR():
+            op = OP_MUL()
+        elif k == TK_SLASH():
+            op = OP_DIV()
+        elif k == TK_PERCENT():
+            op = OP_MOD()
+        else:
+            break
+        p = pbump(p)
+        p = parse_unary(p)
+        if p.err == 1:
+            return p
+        rhs = p.res_node
+        # Python-style array replication: [e] * N
+        if op == OP_MUL() and node_tag(p, lhs) == N_ARRAYLIT() and node_tag(p, rhs) == N_INT():
+            elem = node_child(p, lhs)
+            count = node_ival(p, rhs)
+            if count > 0:
+                p = new_node(p, N_ARRAYLIT(), "rep", count)
+                rep = p.res_node
+                p = set_child(p, rep, elem)
+                lhs = rep
+                continue
+        p = mk_bin(p, op, lhs, rhs)
+        lhs = p.res_node
+    p.res_node = lhs
+    return p
+
+def parse_unary(p: PState) -> PState:
+    k = pk(p)
+    if k == TK_MINUS():
+        p = pbump(p)
+        p = parse_unary(p)
+        if p.err == 1:
+            return p
+        e = p.res_node
+        p = new_node(p, N_UNARY(), "", OP_NEG())
+        n = p.res_node
+        p = set_child(p, n, e)
+        p.res_node = n
+        return p
+    if k == TK_BANG():
+        p = pbump(p)
+        p = parse_unary(p)
+        if p.err == 1:
+            return p
+        e = p.res_node
+        p = new_node(p, N_UNARY(), "", OP_NOT())
+        n = p.res_node
+        p = set_child(p, n, e)
+        p.res_node = n
+        return p
+    return parse_postfix(p)
+
+def parse_postfix(p: PState) -> PState:
+    p = parse_primary(p)
+    if p.err == 1:
+        return p
+    e = p.res_node
+    while p.err == 0:
+        k = pk(p)
+        if k == TK_LPAREN():
+            name = ""
+            if node_tag(p, e) == N_VAR():
+                name = node_sval(p, e)
+            else:
+                return perr(p, "only named functions can be called")
+            p = pbump(p)
+            p = parse_call_args(p)
+            if p.err == 1:
+                return p
+            args = p.res_vec
+            p = peat(p, TK_RPAREN(), "')'")
+            lit = p.lit_id
+            p.lit_id = p.lit_id + 1
+            p = new_node(p, N_CALL(), name, lit)
+            call = p.res_node
+            ai = 0
+            while ai < args.len:
+                p = append_child(p, call, vec_get(args, ai))
+                ai = ai + 1
+            e = call
+            continue
+        if k == TK_LBRACKET():
+            p = pbump(p)
+            p = parse_expr(p)
+            if p.err == 1:
+                return p
+            idx = p.res_node
+            p = peat(p, TK_RBRACKET(), "']'")
+            p = new_node(p, N_INDEX(), "", 0)
+            n = p.res_node
+            p = set_child(p, n, e)
+            p = append_child(p, n, idx)
+            e = n
+            continue
+        if k == TK_DOT():
+            p = pbump(p)
+            fname = ""
+            if pk(p) == TK_IDENT():
+                fname = tk_sval(p.st, p.idx)
+                p = pbump(p)
+            else:
+                return perr(p, "expected field name after '.'")
+            p = new_node(p, N_FIELDACCESS(), fname, 0)
+            n = p.res_node
+            p = set_child(p, n, e)
+            e = n
+            continue
+        break
+    p.res_node = e
+    return p
+
+def parse_call_args(p: PState) -> PState:
+    args = vec_new()
+    if pk(p) == TK_RPAREN():
+        p.res_vec = args
+        return p
+    loop_args = 1
+    while loop_args == 1:
+        aname = ""
+        if pk(p) == TK_IDENT() and pk2(p) == TK_ASSIGN():
+            aname = tk_sval(p.st, p.idx)
+            p = pbump(p)
+            p = pbump(p)
+        p = parse_expr(p)
+        if p.err == 1:
+            p.res_vec = args
+            return p
+        value = p.res_node
+        p = new_node(p, N_ARG(), aname, 0)
+        a = p.res_node
+        p = set_child(p, a, value)
+        args = vec_push(args, a)
+        if pk(p) == TK_COMMA():
+            p = pbump(p)
+            if pk(p) == TK_RPAREN():
+                loop_args = 0
+        elif pk(p) == TK_RPAREN():
+            loop_args = 0
+        else:
+            p = perr(p, "expected ',' or ')' in arguments")
+            p.res_vec = args
+            return p
+    p.res_vec = args
+    return p
+
+def parse_primary(p: PState) -> PState:
+    k = pk(p)
+    if k == TK_INT():
+        v = tk_ival(p.st, p.idx)
+        s = tk_sval(p.st, p.idx)
+        p = pbump(p)
+        return new_node(p, N_INT(), s, v)
+    if k == TK_FLOAT():
+        s = tk_sval(p.st, p.idx)
+        p = pbump(p)
+        return new_node(p, N_FLOAT(), s, 0)
+    if k == TK_STR():
+        s = tk_sval(p.st, p.idx)
+        p = pbump(p)
+        return new_node(p, N_STR(), s, 0)
+    if k == TK_TRUE():
+        p = pbump(p)
+        return new_node(p, N_BOOL(), "true", 1)
+    if k == TK_FALSE():
+        p = pbump(p)
+        return new_node(p, N_BOOL(), "false", 0)
+    if k == TK_IDENT():
+        name = tk_sval(p.st, p.idx)
+        p = pbump(p)
+        return new_node(p, N_VAR(), name, 0)
+    if k == TK_LPAREN():
+        p = pbump(p)
+        p = parse_expr(p)
+        if p.err == 1:
+            return p
+        p = peat(p, TK_RPAREN(), "')'")
+        return p
+    if k == TK_LBRACKET():
+        p = pbump(p)
+        p = new_node(p, N_ARRAYLIT(), "", 0)
+        n = p.res_node
+        if pk(p) != TK_RBRACKET():
+            loop_e = 1
+            while loop_e == 1:
+                p = parse_expr(p)
+                if p.err == 1:
+                    return p
+                p = append_child(p, n, p.res_node)
+                if pk(p) == TK_COMMA():
+                    p = pbump(p)
+                    if pk(p) == TK_RBRACKET():
+                        loop_e = 0
+                elif pk(p) == TK_RBRACKET():
+                    loop_e = 0
+                else:
+                    return perr(p, "expected ',' or ']' in array literal")
+        p = peat(p, TK_RBRACKET(), "']'")
+        if node_child(p, n) == -1:
+            return perr(p, "empty array literals are not allowed")
+        p.res_node = n
+        return p
+    if k == TK_FSTR():
+        raw = tk_sval(p.st, p.idx)
+        p = pbump(p)
+        return desugar_fstring(p, raw)
+    return perr(p, "expected an expression")
+
+# ---- f-strings ----
+
+def desugar_fstring(p: PState, raw: string) -> PState:
+    # scan raw into lit/expr parts; then build "lit" + str(expr) + ...
+    pparts_kind = vec_new()   # 0 = lit, 1 = expr
+    pparts_text = vec_new()
+    lit = ""
+    i = 0
+    rn = len(raw)
+    while i < rn:
+        c = str_get(raw, i)
+        if c == 123:
+            if i + 1 < rn and str_get(raw, i + 1) == 123:
+                lit = lit + chr_str(123)
+                i = i + 2
+                continue
+            if lit != "":
+                pparts_kind = vec_push(pparts_kind, 0)
+                pparts_text = vec_push(pparts_text, as_ptr(lit))
+                lit = ""
+            i = i + 1
+            start = i
+            depth = 0
+            done = 0
+            while done == 0:
+                if i >= rn:
+                    return perr(p, "unterminated '{' in f-string")
+                c2 = str_get(raw, i)
+                if c2 == 40 or c2 == 91:
+                    depth = depth + 1
+                elif c2 == 41 or c2 == 93:
+                    depth = depth - 1
+                elif c2 == 34:
+                    i = i + 1
+                    while i < rn and str_get(raw, i) != 34:
+                        if str_get(raw, i) == 92 and i + 1 < rn:
+                            i = i + 1
+                        i = i + 1
+                elif c2 == 125 and depth == 0:
+                    done = 1
+                i = i + 1
+            expr_text = str_slice(raw, start, i - 1 - start)
+            pparts_kind = vec_push(pparts_kind, 1)
+            pparts_text = vec_push(pparts_text, as_ptr(expr_text))
+            continue
+        if c == 125:
+            if i + 1 < rn and str_get(raw, i + 1) == 125:
+                lit = lit + chr_str(125)
+                i = i + 2
+                continue
+            return perr(p, "single '}' in f-string (use '}}' for a literal brace)")
+        if c == 92 and i + 1 < rn:
+            e = str_get(raw, i + 1)
+            if e == 110:
+                lit = lit + chr_str(10)
+            elif e == 116:
+                lit = lit + chr_str(9)
+            elif e == 92:
+                lit = lit + chr_str(92)
+            elif e == 34:
+                lit = lit + chr_str(34)
+            else:
+                return perr(p, "unknown escape sequence in f-string")
+            i = i + 2
+            continue
+        lit = lit + chr_str(c)
+        i = i + 1
+    if lit != "":
+        pparts_kind = vec_push(pparts_kind, 0)
+        pparts_text = vec_push(pparts_text, as_ptr(lit))
+
+    # build the expression chain
+    acc = -1
+    i = 0
+    while i < pparts_kind.len:
+        if vec_get(pparts_kind, i) == 0:
+            t = as_string(vec_get(pparts_text, i))
+            if t != "":
+                p = mk_lit_str(p, t)
+                part = p.res_node
+                if acc == -1:
+                    acc = part
+                else:
+                    p = mk_bin(p, OP_ADD(), acc, part)
+                    acc = p.res_node
+        else:
+            etext = as_string(vec_get(pparts_text, i))
+            p = parse_sub_expr(p, etext)
+            if p.err == 1:
+                return p
+            value = p.res_node
+            p = mk_call_str(p, "str", value)
+            call = p.res_node
+            if acc == -1:
+                acc = call
+            else:
+                p = mk_bin(p, OP_ADD(), acc, call)
+                acc = p.res_node
+        i = i + 1
+    if acc == -1:
+        return mk_lit_str(p, "")
+    p.res_node = acc
+    return p
+
+# parse one expression from a snippet, sharing this parser's arena
+def parse_sub_expr(p: PState, text: string) -> PState:
+    padded = "(" + text + ")"
+    sub_lex = lex_all(lex_state_new(padded))
+    sub = parser_new(sub_lex)
+    sub.n_tag = p.n_tag
+    sub.n_sval = p.n_sval
+    sub.n_ival = p.n_ival
+    sub.n_child = p.n_child
+    sub.n_next = p.n_next
+    sub.lit_id = p.lit_id
+    sub = parse_expr(sub)
+    p.n_tag = sub.n_tag
+    p.n_sval = sub.n_sval
+    p.n_ival = sub.n_ival
+    p.n_child = sub.n_child
+    p.n_next = sub.n_next
+    p.lit_id = sub.lit_id
+    if sub.err == 1:
+        return perr(p, "invalid expression in f-string: " + sub.errmsg)
+    if pk(sub) == TK_NEWLINE():
+        sub = pbump(sub)
+    if pk(sub) != TK_EOF():
+        return perr(p, "unexpected tokens after f-string expression")
+    p.res_node = sub.res_node
+    return p

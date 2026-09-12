@@ -3,6 +3,47 @@
 Notable changes to the Aoxn compiler and language. Aoxn follows semver-ish
 minor bumps while pre-1.0: each minor version is a language milestone.
 
+## [0.11.0] - 2026-09-12
+
+### Added
+- **Self-hosting stage 2: the Aoxn parser written in Aoxn**
+  (`selfhost/parser.ax`, ~1100 lines) — arena AST (tag / sval / ival / child /
+  next in parallel Vecs, first-child + next-sibling), full grammar port:
+  declarations (import / struct / def+extern, generic headers, array-length
+  params), statements (let / annotated let / assignment / if-elif-else folding
+  / while / for-range / for-array / break / continue / return / pass),
+  precedence-climbing expressions, call arguments, indexing, field access,
+  array literals + `[e] * N` replication, and f-string desugaring via
+  sub-lexing. Verified by `selfhost/parse_demo.ax` plus an exact AST-dump
+  regression test (`selfhost_parser_ast_dump`).
+- **Self-hosting stage 3, first slice: the Aoxn type checker written in Aoxn**
+  (`selfhost/typecheck.ax`, ~1000 lines) — strict rules ported: struct
+  collection (duplicate + cycle detection), signature collection, scope and
+  struct tables, all-paths-return / unreachable-code analysis, expression
+  typing, builtins, struct literals. Generic functions are reported as
+  unsupported for now. Verified by `selfhost/tycheck_demo.ax` (accepts a
+  well-typed program, rejects an ill-typed one) plus
+  `selfhost_typechecker_accepts_and_rejects`.
+- Self-hosted lexer: `;` token for array types, and f-strings now emit the
+  raw literal source in the FSTR token so the parser can re-lex
+  interpolations (matching the Rust lexer's literal/expr split).
+
+### Fixed
+- **Self-hosted parser segfault (the v0.11 WIP known issue).** Helpers such as
+  `new_node` mutated a pass-by-value `PState` copy and discarded the write-back
+  (`p.n_tag = vec_push(...)`), so the caller's arena Vecs stayed at `data=0`
+  and the first `vec_set` stored through NULL. Rewritten in write-back style:
+  every mutating function returns the updated `PState`, and multi-value
+  results travel through `p.res_node` / `p.res_vec`.
+- Self-hosted type checker: same write-back bug in `alloc_ty`; additionally
+  the type arena's `t_elem` / `t_len` / `t_sname` Vecs were index-misaligned
+  (seeded with a dummy slot while `t_tag` was not), making `ty_sname` return
+  the wrong struct names. Fixed; struct-field counting no longer includes the
+  reservation rows.
+- Codegen: an unannotated binding of `as_string(...)` / `as_ptr(...)`
+  (`x = as_string(p)`) failed with "unknown call in type hint"; both builtins
+  now carry type hints (`string` / `int`).
+
 ## [0.10.0] - 2026-09-06
 
 ### Changed

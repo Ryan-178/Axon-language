@@ -1,0 +1,1067 @@
+# Aoxn type checker, written in Aoxn (self-hosting stage 3).
+#
+# Checks the arena AST from parser.ax against the strict Aoxn rules:
+# no implicit conversions, bool conditions, all-paths-return, no unreachable
+# code, exact struct literals, unchecked index typing, builtin signatures.
+#
+# Types live in a recursive arena (t_tag / t_elem / t_len / t_sname);
+# the scope, struct table and function signatures are flat parallel Vecs.
+# Multi-value results travel through c.res_ok + c.r_ty (write-back style).
+#
+# WIP limits (stage 3): generic declarations/calls are reported as
+# unsupported; monomorphization lands in the next milestone.
+
+import "../stdlib/stdlib.ax"
+import "lexer.ax"
+import "parser.ax"
+
+# ---- type tags ----
+def TY_INT() -> int:
+    return 1
+
+def TY_FLOAT() -> int:
+    return 2
+
+def TY_BOOL() -> int:
+    return 3
+
+def TY_STR() -> int:
+    return 4
+
+def TY_VOID() -> int:
+    return 5
+
+def TY_ARRAY() -> int:
+    return 6
+
+def TY_STRUCT() -> int:
+    return 7
+
+# ---- checker state ----
+
+struct CState:
+    p: PState
+    err: int
+    errmsg: string
+    loop_depth: int
+    cur_ret: int
+    res_ok: int
+    r_ty: int
+    # type arena
+    t_tag: Vec
+    t_elem: Vec
+    t_len: Vec
+    t_sname: Vec
+    t_int: int
+    t_float: int
+    t_bool: int
+    t_str: int
+    t_void: int
+    # flat function scope: name -> type index
+    sc_name: Vec
+    sc_ty: Vec
+    # struct fields
+    sf_struct: Vec
+    sf_name: Vec
+    sf_ty: Vec
+    # function signatures
+    fn_name: Vec
+    fn_nparam: Vec
+    fn_ret: Vec
+    fp_fn: Vec
+    fp_name: Vec
+    fp_ty: Vec
+
+def alloc_ty(c: CState, tag: int, elem: int, ln: int, sname: string) -> CState:
+    c.t_tag = vec_push(c.t_tag, tag)
+    c.t_elem = vec_push(c.t_elem, elem)
+    c.t_len = vec_push(c.t_len, ln)
+    c.t_sname = vec_push(c.t_sname, as_ptr(sname))
+    c.r_ty = c.t_tag.len - 1
+    c.res_ok = 1
+    return c
+
+def checker_new(st0: LexState) -> CState:
+    st = lex_all(st0)
+    c = CState(
+        p=parser_new(st),
+        err=0,
+        errmsg="",
+        loop_depth=0,
+        cur_ret=-1,
+        res_ok=1,
+        r_ty=-1,
+        t_tag=vec_new(),
+        t_elem=vec_new(),
+        t_len=vec_new(),
+        t_sname=vec_new(),
+        t_int=0,
+        t_float=0,
+        t_bool=0,
+        t_str=0,
+        t_void=0,
+        sc_name=vec_new(),
+        sc_ty=vec_new(),
+        sf_struct=vec_new(),
+        sf_name=vec_new(),
+        sf_ty=vec_new(),
+        fn_name=vec_new(),
+        fn_nparam=vec_new(),
+        fn_ret=vec_new(),
+        fp_fn=vec_new(),
+        fp_name=vec_new(),
+        fp_ty=vec_new(),
+    )
+    c = alloc_ty(c, TY_INT(), 0, 0, "")
+    c.t_int = c.r_ty
+    c = alloc_ty(c, TY_FLOAT(), 0, 0, "")
+    c.t_float = c.r_ty
+    c = alloc_ty(c, TY_BOOL(), 0, 0, "")
+    c.t_bool = c.r_ty
+    c = alloc_ty(c, TY_STR(), 0, 0, "")
+    c.t_str = c.r_ty
+    c = alloc_ty(c, TY_VOID(), 0, 0, "")
+    c.t_void = c.r_ty
+    return c
+
+def cerr(c: CState, msg: string) -> CState:
+    if c.err == 0:
+        c.err = 1
+        c.errmsg = msg
+    return c
+
+def ty_tag(c: CState, ty: int) -> int:
+    return vec_get(c.t_tag, ty)
+
+def ty_elem(c: CState, ty: int) -> int:
+    return vec_get(c.t_elem, ty)
+
+def ty_len(c: CState, ty: int) -> int:
+    return vec_get(c.t_len, ty)
+
+def ty_sname(c: CState, ty: int) -> string:
+    return as_string(vec_get(c.t_sname, ty))
+
+def ty_eq(c: CState, a: int, b: int) -> int:
+    if a == b:
+        return 1
+    if ty_tag(c, a) != ty_tag(c, b):
+        return 0
+    t = ty_tag(c, a)
+    if t == TY_ARRAY():
+        if ty_len(c, a) != ty_len(c, b):
+            return 0
+        return ty_eq(c, ty_elem(c, a), ty_elem(c, b))
+    if t == TY_STRUCT():
+        if ty_sname(c, a) == ty_sname(c, b):
+            return 1
+        return 0
+    return 0
+
+def ty_display(c: CState, ty: int) -> string:
+    t = ty_tag(c, ty)
+    if t == TY_INT():
+        return "int"
+    if t == TY_FLOAT():
+        return "float"
+    if t == TY_BOOL():
+        return "bool"
+    if t == TY_STR():
+        return "string"
+    if t == TY_VOID():
+        return "void"
+    if t == TY_ARRAY():
+        return "[" + ty_display(c, ty_elem(c, ty)) + "; " + str(ty_len(c, ty)) + "]"
+    return ty_sname(c, ty)
+
+def is_printable(c: CState, ty: int) -> int:
+    t = ty_tag(c, ty)
+    if t == TY_INT() or t == TY_FLOAT() or t == TY_BOOL() or t == TY_STR():
+        return 1
+    return 0
+
+def is_compound(c: CState, ty: int) -> int:
+    t = ty_tag(c, ty)
+    if t == TY_ARRAY() or t == TY_STRUCT():
+        return 1
+    return 0
+
+# ---- scope ----
+
+def scope_push(c: CState, name: string, ty: int) -> CState:
+    c.sc_name = vec_push(c.sc_name, as_ptr(name))
+    c.sc_ty = vec_push(c.sc_ty, ty)
+    return c
+
+def scope_lookup(c: CState, name: string) -> CState:
+    c.res_ok = 0
+    c.r_ty = -1
+    i = c.sc_name.len - 1
+    while i >= 0:
+        if as_string(vec_get(c.sc_name, i)) == name:
+            c.res_ok = 1
+            c.r_ty = vec_get(c.sc_ty, i)
+            return c
+        i = i - 1
+    return c
+
+# ---- struct table ----
+
+def struct_known(c: CState, name: string) -> int:
+    i = 0
+    while i < c.sf_struct.len:
+        if as_string(vec_get(c.sf_struct, i)) == name:
+            return 1
+        i = i + 1
+    return 0
+
+def field_lookup(c: CState, sname: string, fname: string) -> CState:
+    c.res_ok = 0
+    c.r_ty = -1
+    i = 0
+    while i < c.sf_struct.len:
+        if as_string(vec_get(c.sf_struct, i)) == sname and as_string(vec_get(c.sf_name, i)) == fname:
+            c.res_ok = 1
+            c.r_ty = vec_get(c.sf_ty, i)
+            return c
+        i = i + 1
+    return c
+
+def struct_field_count(c: CState, sname: string) -> int:
+    n = 0
+    i = 0
+    while i < c.sf_struct.len:
+        if as_string(vec_get(c.sf_struct, i)) == sname and as_string(vec_get(c.sf_name, i)) != "":
+            n = n + 1
+        i = i + 1
+    return n
+
+# ---- signature helpers ----
+
+def sig_index(c: CState, name: string) -> int:
+    i = 0
+    while i < c.fn_name.len:
+        if as_string(vec_get(c.fn_name, i)) == name:
+            return i
+        i = i + 1
+    return -1
+
+def sig_param_ty(c: CState, fni: int, k: int) -> int:
+    seen = 0
+    i = 0
+    while i < c.fp_fn.len:
+        if vec_get(c.fp_fn, i) == fni:
+            if seen == k:
+                return vec_get(c.fp_ty, i)
+            seen = seen + 1
+        i = i + 1
+    return -1
+
+# ---- type node resolution ----
+
+def resolve_ty_node(c: CState, ty: int) -> CState:
+    c.res_ok = 0
+    c.r_ty = -1
+    if ty == -1:
+        return cerr(c, "missing type")
+    t = node_tag(c.p, ty)
+    if t == N_TYINT():
+        c.r_ty = c.t_int
+    elif t == N_TYFLOAT():
+        c.r_ty = c.t_float
+    elif t == N_TYBOOL():
+        c.r_ty = c.t_bool
+    elif t == N_TYSTRING():
+        c.r_ty = c.t_str
+    elif t == N_TYVOID():
+        c.r_ty = c.t_void
+    elif t == N_TYARRAY():
+        ln = node_ival(c.p, ty)
+        if ln == -1:
+            return cerr(c, "array length parameters are only valid inside generic functions")
+        c = resolve_ty_node(c, node_child(c.p, ty))
+        if c.err == 1:
+            return c
+        elem = c.r_ty
+        c = alloc_ty(c, TY_ARRAY(), elem, ln, "")
+    elif t == N_TYSTRUCT():
+        name = node_sval(c.p, ty)
+        if struct_known(c, name) == 0:
+            return cerr(c, "unknown type '" + name + "'")
+        c = alloc_ty(c, TY_STRUCT(), 0, 0, name)
+    else:
+        return cerr(c, "malformed type annotation")
+    c.res_ok = 1
+    return c
+
+# ---- struct collection ----
+
+# does a struct (transitively) contain itself? path = grey nodes on the
+# current DFS path (immutable path semantics: each recursion gets an
+# extended copy, so sibling branches never see each other's markers)
+def struct_cycle(c: CState, name: string, path: Vec) -> int:
+    i = 0
+    while i < path.len:
+        if as_string(vec_get(path, i)) == name:
+            return 1
+        i = i + 1
+    path = vec_push(path, as_ptr(name))
+    i = 0
+    while i < c.sf_struct.len:
+        if as_string(vec_get(c.sf_struct, i)) == name and as_string(vec_get(c.sf_name, i)) != "":
+            fty = vec_get(c.sf_ty, i)
+            if ty_tag(c, fty) == TY_STRUCT():
+                if struct_cycle(c, ty_sname(c, fty), path) == 1:
+                    return 1
+        i = i + 1
+    return 0
+
+def collect_structs(c: CState) -> CState:
+    root = c.p.root
+    # pass 1: reserve names
+    ch = node_child(c.p, root)
+    while ch != -1 and c.err == 0:
+        if node_tag(c.p, ch) == N_STRUCT():
+            sname = node_sval(c.p, ch)
+            if struct_known(c, sname) == 1:
+                return cerr(c, "struct '" + sname + "' is defined more than once")
+            c.sf_struct = vec_push(c.sf_struct, as_ptr(sname))
+            c.sf_name = vec_push(c.sf_name, as_ptr(""))
+            c.sf_ty = vec_push(c.sf_ty, 0)
+        ch = node_next(c.p, ch)
+    if c.err == 1:
+        return c
+    # pass 2: fields
+    ch = node_child(c.p, root)
+    while ch != -1 and c.err == 0:
+        if node_tag(c.p, ch) == N_STRUCT():
+            sname = node_sval(c.p, ch)
+            fld = node_child(c.p, ch)
+            while fld != -1 and c.err == 0:
+                fname = node_sval(c.p, fld)
+                c2 = field_lookup(c, sname, fname)
+                if c2.res_ok == 1:
+                    return cerr(c2, "duplicate field '" + fname + "' in struct '" + sname + "'")
+                c = c2
+                c = resolve_ty_node(c, node_child(c.p, fld))
+                if c.err == 1:
+                    return c
+                if ty_tag(c, c.r_ty) == TY_VOID():
+                    return cerr(c, "field '" + fname + "' cannot have type void")
+                c.sf_struct = vec_push(c.sf_struct, as_ptr(sname))
+                c.sf_name = vec_push(c.sf_name, as_ptr(fname))
+                c.sf_ty = vec_push(c.sf_ty, c.r_ty)
+                fld = node_next(c.p, fld)
+        ch = node_next(c.p, ch)
+    if c.err == 1:
+        return c
+    # cycle check
+    i = 0
+    while i < c.sf_struct.len:
+        sname = as_string(vec_get(c.sf_struct, i))
+        if struct_cycle(c, sname, vec_new()) == 1:
+            return cerr(c, "recursive struct '" + sname + "' (a struct cannot contain itself, directly or indirectly)")
+        i = i + 1
+    return c
+
+# ---- signature collection ----
+
+def collect_sigs(c: CState) -> CState:
+    root = c.p.root
+    ch = node_child(c.p, root)
+    while ch != -1 and c.err == 0:
+        t = node_tag(c.p, ch)
+        if t == N_FN() or t == N_EXTERN():
+            name = node_sval(c.p, ch)
+            is_extern = node_ival(c.p, ch)
+            # generic headers are stage-3 WIP
+            kid = node_child(c.p, ch)
+            while kid != -1:
+                if node_tag(c.p, kid) == N_TYPEPARAMS():
+                    return cerr(c, "generic functions are not supported yet by the self-hosted checker")
+                kid = node_next(c.p, kid)
+            if sig_index(c, name) != -1:
+                return cerr(c, "function '" + name + "' is defined more than once")
+            if struct_known(c, name) == 1:
+                return cerr(c, "'" + name + "' is already defined as a struct")
+            if is_extern == 1 and name == "main":
+                return cerr(c, "'main' cannot be declared extern")
+            fni = c.fn_name.len
+            c.fn_name = vec_push(c.fn_name, as_ptr(name))
+            c.fn_nparam = vec_push(c.fn_nparam, 0)
+            c.fn_ret = vec_push(c.fn_ret, c.t_void)
+            # params
+            pnames = vec_new()
+            np = 0
+            kid = node_child(c.p, ch)
+            while kid != -1 and c.err == 0:
+                if node_tag(c.p, kid) == N_PARAM():
+                    pname = node_sval(c.p, kid)
+                    j = 0
+                    while j < pnames.len:
+                        if as_string(vec_get(pnames, j)) == pname:
+                            return cerr(c, "duplicate parameter '" + pname + "' in function '" + name + "'")
+                        j = j + 1
+                    pnames = vec_push(pnames, as_ptr(pname))
+                    c = resolve_ty_node(c, node_child(c.p, kid))
+                    if c.err == 1:
+                        return c
+                    if ty_tag(c, c.r_ty) == TY_VOID():
+                        return cerr(c, "parameter '" + pname + "' cannot have type void")
+                    c.fp_fn = vec_push(c.fp_fn, fni)
+                    c.fp_name = vec_push(c.fp_name, as_ptr(pname))
+                    c.fp_ty = vec_push(c.fp_ty, c.r_ty)
+                    np = np + 1
+                kid = node_next(c.p, kid)
+            vec_set(c.fn_nparam, fni, np)
+            # return type: the child right before the BLOCK
+            ret_type = -1
+            kid = node_child(c.p, ch)
+            while kid != -1:
+                nxt = node_next(c.p, kid)
+                if nxt != -1 and node_tag(c.p, nxt) == N_BLOCK():
+                    ret_type = kid
+                kid = nxt
+            if ret_type == -1:
+                return cerr(c, "malformed function '" + name + "'")
+            c = resolve_ty_node(c, ret_type)
+            if c.err == 1:
+                return c
+            vec_set(c.fn_ret, fni, c.r_ty)
+        ch = node_next(c.p, ch)
+    return c
+
+# ---- all-paths-return analysis ----
+
+def block_returns_all(c: CState, block: int) -> int:
+    st = node_child(c.p, block)
+    while st != -1:
+        if stmt_guarantees_return(c, st) == 1:
+            return 1
+        st = node_next(c.p, st)
+    return 0
+
+def stmt_guarantees_return(c: CState, stmt: int) -> int:
+    t = node_tag(c.p, stmt)
+    if t == N_RETURN():
+        return 1
+    if t == N_IF():
+        then_b = node_child(c.p, stmt)
+        then_b = node_next(c.p, then_b)
+        c2 = c
+        else_b = node_next(c.p, then_b)
+        if block_returns_all(c2, then_b) == 0:
+            return 0
+        if else_b == -1:
+            return 0
+        return block_returns_all(c2, else_b)
+    return 0
+
+# ---- statements ----
+
+def check_block(c: CState, block: int) -> CState:
+    st = node_child(c.p, block)
+    terminated = 0
+    while st != -1 and c.err == 0:
+        if terminated == 1:
+            return cerr(c, "unreachable statement after 'return'")
+        c = check_stmt(c, st)
+        if stmt_guarantees_return(c, st) == 1:
+            terminated = 1
+        st = node_next(c.p, st)
+    return c
+
+def check_stmt(c: CState, stmt: int) -> CState:
+    t = node_tag(c.p, stmt)
+    if t == N_LET():
+        name = node_sval(c.p, stmt)
+        ann = -1
+        value = -1
+        if node_ival(c.p, stmt) == 1:
+            ann = node_child(c.p, stmt)
+            value = node_next(c.p, ann)
+        else:
+            value = node_child(c.p, stmt)
+        c = check_expr(c, value)
+        if c.err == 1:
+            return c
+        vty = c.r_ty
+        if ty_tag(c, vty) == TY_VOID():
+            return cerr(c, "cannot bind a void expression to '" + name + "'")
+        c2 = scope_lookup(c, name)
+        if c2.res_ok == 1:
+            # re-assignment keeps the declared type
+            dy = c2.r_ty
+            c = c2
+            if ann != -1:
+                c = resolve_ty_node(c, ann)
+                if c.err == 1:
+                    return c
+                if ty_eq(c, c.r_ty, dy) == 0:
+                    return cerr(c, "cannot re-declare '" + name + "' as " + ty_display(c, c.r_ty) + ": it is already " + ty_display(c, dy))
+            if ty_eq(c, vty, dy) == 0:
+                return cerr(c, "cannot assign a value of type " + ty_display(c, vty) + " to '" + name + ": " + ty_display(c, dy) + "'")
+            return c
+        # first binding
+        if ann != -1:
+            c = resolve_ty_node(c, ann)
+            if c.err == 1:
+                return c
+            if ty_eq(c, c.r_ty, vty) == 0:
+                return cerr(c, "cannot initialize '" + name + ": " + ty_display(c, c.r_ty) + "' with an expression of type " + ty_display(c, vty))
+        c = scope_push(c, name, vty)
+        return c
+    if t == N_ASSIGN():
+        target = node_child(c.p, stmt)
+        value = node_next(c.p, target)
+        c = lvalue_ty(c, target)
+        if c.err == 1:
+            return c
+        dty = c.r_ty
+        c = check_expr(c, value)
+        if c.err == 1:
+            return c
+        if ty_eq(c, c.r_ty, dty) == 0:
+            return cerr(c, "cannot assign a value of type " + ty_display(c, c.r_ty) + " to a target of type " + ty_display(c, dty))
+        return c
+    if t == N_IF():
+        cond = node_child(c.p, stmt)
+        then_b = node_next(c.p, cond)
+        c = check_expr(c, cond)
+        if c.err == 1:
+            return c
+        if ty_tag(c, c.r_ty) != TY_BOOL():
+            return cerr(c, "'if' condition must be bool, found " + ty_display(c, c.r_ty))
+        c = check_block(c, then_b)
+        if c.err == 1:
+            return c
+        else_b = node_next(c.p, then_b)
+        if else_b != -1:
+            c = check_block(c, else_b)
+        return c
+    if t == N_WHILE():
+        cond = node_child(c.p, stmt)
+        body = node_next(c.p, cond)
+        c = check_expr(c, cond)
+        if c.err == 1:
+            return c
+        if ty_tag(c, c.r_ty) != TY_BOOL():
+            return cerr(c, "'while' condition must be bool, found " + ty_display(c, c.r_ty))
+        c.loop_depth = c.loop_depth + 1
+        c = check_block(c, body)
+        c.loop_depth = c.loop_depth - 1
+        return c
+    if t == N_FOR():
+        return check_for(c, stmt)
+    if t == N_BREAK():
+        if c.loop_depth == 0:
+            return cerr(c, "'break' outside of a loop")
+        return c
+    if t == N_CONTINUE():
+        if c.loop_depth == 0:
+            return cerr(c, "'continue' outside of a loop")
+        return c
+    if t == N_RETURN():
+        e = node_child(c.p, stmt)
+        rty = c.cur_ret
+        if e == -1:
+            if ty_tag(c, rty) != TY_VOID():
+                return cerr(c, "'return' must return a value of type " + ty_display(c, rty))
+            return c
+        if ty_tag(c, rty) == TY_VOID():
+            return cerr(c, "void function cannot return a value")
+        c = check_expr(c, e)
+        if c.err == 1:
+            return c
+        if ty_eq(c, c.r_ty, rty) == 0:
+            return cerr(c, "'return' type mismatch: expected " + ty_display(c, rty) + ", found " + ty_display(c, c.r_ty))
+        return c
+    if t == N_PASS():
+        return c
+    if t == N_EXPRSTMT():
+        c = check_expr(c, node_child(c.p, stmt))
+        return c
+    return cerr(c, "unknown statement in the arena (tag " + str(t) + ")")
+
+def check_for(c: CState, stmt: int) -> CState:
+    var = node_sval(c.p, stmt)
+    is_range = node_ival(c.p, stmt)
+    var_ty = c.t_int
+    if is_range == 1:
+        a = node_child(c.p, stmt)
+        nargs = 0
+        while a != -1:
+            if node_tag(c.p, a) == N_BLOCK():
+                a = -1
+            else:
+                c = check_expr(c, a)
+                if c.err == 1:
+                    return c
+                if ty_tag(c, c.r_ty) != TY_INT():
+                    return cerr(c, "range arguments must be int, found " + ty_display(c, c.r_ty))
+                nargs = nargs + 1
+                a = node_next(c.p, a)
+        if nargs < 1 or nargs > 3:
+            return cerr(c, "range expects 1 to 3 arguments, found " + str(nargs))
+    else:
+        arr = node_child(c.p, stmt)
+        c = check_expr(c, arr)
+        if c.err == 1:
+            return c
+        if ty_tag(c, c.r_ty) != TY_ARRAY():
+            return cerr(c, "'for' can only iterate over arrays, found " + ty_display(c, c.r_ty))
+        var_ty = ty_elem(c, c.r_ty)
+    # loop variable may already exist (reuse rules)
+    c2 = scope_lookup(c, var)
+    if c2.res_ok == 1:
+        if ty_eq(c2, c2.r_ty, var_ty) == 0:
+            return cerr(c2, "loop variable '" + var + "' is already " + ty_display(c2, c2.r_ty) + ", cannot reuse as " + ty_display(c2, var_ty))
+        c = c2
+    else:
+        c = c2
+        c = scope_push(c, var, var_ty)
+    # the body is the last child
+    body = node_child(c.p, stmt)
+    while node_next(c.p, body) != -1:
+        body = node_next(c.p, body)
+    c.loop_depth = c.loop_depth + 1
+    c = check_block(c, body)
+    c.loop_depth = c.loop_depth - 1
+    return c
+
+# ---- lvalues ----
+
+def lvalue_ty(c: CState, e: int) -> CState:
+    t = node_tag(c.p, e)
+    if t == N_VAR():
+        c = scope_lookup(c, node_sval(c.p, e))
+        if c.res_ok == 0:
+            return cerr(c, "assignment to undeclared variable '" + node_sval(c.p, e) + "'")
+        return c
+    if t == N_INDEX():
+        arr = node_child(c.p, e)
+        idx = node_next(c.p, arr)
+        c = check_expr(c, arr)
+        if c.err == 1:
+            return c
+        if ty_tag(c, c.r_ty) != TY_ARRAY():
+            return cerr(c, "cannot index a value of type " + ty_display(c, c.r_ty))
+        elem = ty_elem(c, c.r_ty)
+        c = check_expr(c, idx)
+        if c.err == 1:
+            return c
+        if ty_tag(c, c.r_ty) != TY_INT():
+            return cerr(c, "array index must be int, found " + ty_display(c, c.r_ty))
+        c.r_ty = elem
+        return c
+    if t == N_FIELDACCESS():
+        obj = node_child(c.p, e)
+        fname = node_sval(c.p, e)
+        c = check_expr(c, obj)
+        if c.err == 1:
+            return c
+        if ty_tag(c, c.r_ty) != TY_STRUCT():
+            return cerr(c, "type " + ty_display(c, c.r_ty) + " has no field '" + fname + "'")
+        c = field_lookup(c, ty_sname(c, c.r_ty), fname)
+        if c.res_ok == 0:
+            return cerr(c, "struct has no field '" + fname + "'")
+        return c
+    return cerr(c, "invalid assignment target")
+
+# ---- expressions ----
+
+def check_expr(c: CState, e: int) -> CState:
+    if e == -1:
+        return cerr(c, "missing expression")
+    t = node_tag(c.p, e)
+    if t == N_INT():
+        c.r_ty = c.t_int
+        return c
+    if t == N_FLOAT():
+        c.r_ty = c.t_float
+        return c
+    if t == N_STR():
+        c.r_ty = c.t_str
+        return c
+    if t == N_BOOL():
+        c.r_ty = c.t_bool
+        return c
+    if t == N_VAR():
+        c = scope_lookup(c, node_sval(c.p, e))
+        if c.res_ok == 0:
+            return cerr(c, "unknown variable '" + node_sval(c.p, e) + "'")
+        return c
+    if t == N_BINARY():
+        return check_binary(c, e)
+    if t == N_UNARY():
+        return check_unary(c, e)
+    if t == N_INDEX():
+        return lvalue_ty(c, e)
+    if t == N_FIELDACCESS():
+        return lvalue_ty(c, e)
+    if t == N_ARRAYLIT():
+        return check_arraylit(c, e)
+    if t == N_CALL():
+        return check_call(c, e)
+    return cerr(c, "unknown expression in the arena (tag " + str(t) + ")")
+
+def check_binary(c: CState, e: int) -> CState:
+    op = node_ival(c.p, e)
+    lhs = node_child(c.p, e)
+    rhs = node_next(c.p, lhs)
+    c = check_expr(c, lhs)
+    if c.err == 1:
+        return c
+    lt = c.r_ty
+    lname = ty_display(c, lt)
+    c = check_expr(c, rhs)
+    if c.err == 1:
+        return c
+    rt = c.r_ty
+    rname = ty_display(c, rt)
+    ltag = ty_tag(c, lt)
+    rtag = ty_tag(c, rt)
+    if op == OP_AND() or op == OP_OR():
+        if ltag == TY_BOOL() and rtag == TY_BOOL():
+            c.r_ty = c.t_bool
+            return c
+        return cerr(c, "boolean operator requires bool operands, found (" + lname + ", " + rname + ")")
+    if op == OP_EQ() or op == OP_NE():
+        if is_compound(c, lt) == 1 or is_compound(c, rt) == 1:
+            return cerr(c, "cannot compare compound type " + lname + " with " + rname)
+        if ty_eq(c, lt, rt) == 1 and ty_tag(c, lt) != TY_VOID():
+            c.r_ty = c.t_bool
+            return c
+        return cerr(c, "cannot compare " + lname + " with " + rname)
+    if op == OP_LT() or op == OP_LE() or op == OP_GT() or op == OP_GE():
+        if ltag == TY_STR() and rtag == TY_STR():
+            c.r_ty = c.t_bool
+            return c
+        numeric = (ltag == TY_INT() or ltag == TY_FLOAT()) and ltag == rtag
+        if numeric:
+            c.r_ty = c.t_bool
+            return c
+        return cerr(c, "ordering comparison requires two int, two float, or two string operands, found (" + lname + ", " + rname + ")")
+    if op == OP_ADD():
+        if ltag == TY_STR() or rtag == TY_STR():
+            if ltag == TY_STR() and rtag == TY_STR():
+                c.r_ty = c.t_str
+                return c
+            return cerr(c, "cannot concatenate string with " + rname)
+        if (ltag == TY_INT() or ltag == TY_FLOAT()) and ltag == rtag:
+            c.r_ty = lt
+            return c
+        return cerr(c, "'+' requires two int or two float operands, found (" + lname + ", " + rname + ")")
+    if op == OP_SUB() or op == OP_MUL() or op == OP_DIV():
+        if (ltag == TY_INT() or ltag == TY_FLOAT()) and ltag == rtag:
+            c.r_ty = lt
+            return c
+        return cerr(c, "arithmetic requires two int or two float operands, found (" + lname + ", " + rname + ")")
+    if op == OP_MOD():
+        if ltag == TY_INT() and rtag == TY_INT():
+            c.r_ty = c.t_int
+            return c
+        return cerr(c, "'%' requires two int operands, found (" + lname + ", " + rname + ")")
+    return cerr(c, "unknown binary operator")
+
+def check_unary(c: CState, e: int) -> CState:
+    op = node_ival(c.p, e)
+    inner = node_child(c.p, e)
+    c = check_expr(c, inner)
+    if c.err == 1:
+        return c
+    t = ty_tag(c, c.r_ty)
+    if op == OP_NOT():
+        if t == TY_BOOL():
+            c.r_ty = c.t_bool
+            return c
+        return cerr(c, "'!' requires bool, found " + ty_display(c, c.r_ty))
+    if op == OP_NEG():
+        if t == TY_INT() or t == TY_FLOAT():
+            return c
+        return cerr(c, "unary '-' requires int or float, found " + ty_display(c, c.r_ty))
+    return cerr(c, "unknown unary operator")
+
+def check_arraylit(c: CState, e: int) -> CState:
+    rep_len = node_ival(c.p, e)
+    if rep_len != 0:
+        # replication form: [elem] * N — the single child is the element
+        c = check_expr(c, node_child(c.p, e))
+        if c.err == 1:
+            return c
+        elem = c.r_ty
+        c = alloc_ty(c, TY_ARRAY(), elem, rep_len, "")
+        return c
+    first = node_child(c.p, e)
+    if first == -1:
+        return cerr(c, "empty array literals are not allowed")
+    c = check_expr(c, first)
+    if c.err == 1:
+        return c
+    elem = c.r_ty
+    n = 1
+    ch = node_next(c.p, first)
+    while ch != -1:
+        c = check_expr(c, ch)
+        if c.err == 1:
+            return c
+        if ty_eq(c, c.r_ty, elem) == 0:
+            return cerr(c, "array literal elements must share one type: found " + ty_display(c, elem) + " and " + ty_display(c, c.r_ty))
+        n = n + 1
+        ch = node_next(c.p, ch)
+    c = alloc_ty(c, TY_ARRAY(), elem, n, "")
+    return c
+
+def check_call(c: CState, e: int) -> CState:
+    name = node_sval(c.p, e)
+    arg = node_child(c.p, e)
+    # count args
+    nargs = 0
+    a = arg
+    while a != -1:
+        nargs = nargs + 1
+        a = node_next(c.p, a)
+
+    # ---- builtins ----
+    if name == "print":
+        if nargs != 1:
+            return cerr(c, "print expects exactly 1 positional argument")
+        c = check_expr(c, node_child(c.p, arg))
+        if c.err == 1:
+            return c
+        if is_printable(c, c.r_ty) == 0:
+            return cerr(c, "print requires int, float, bool, or string, found " + ty_display(c, c.r_ty))
+        c.r_ty = c.t_void
+        return c
+    if name == "len":
+        if nargs != 1:
+            return cerr(c, "len expects exactly 1 positional argument")
+        c = check_expr(c, node_child(c.p, arg))
+        if c.err == 1:
+            return c
+        t = ty_tag(c, c.r_ty)
+        if t != TY_ARRAY() and t != TY_STR():
+            return cerr(c, "len requires an array or string, found " + ty_display(c, c.r_ty))
+        c.r_ty = c.t_int
+        return c
+    if name == "str":
+        if nargs != 1:
+            return cerr(c, "str expects exactly 1 positional argument")
+        c = check_expr(c, node_child(c.p, arg))
+        if c.err == 1:
+            return c
+        if is_printable(c, c.r_ty) == 0:
+            return cerr(c, "cannot convert " + ty_display(c, c.r_ty) + " to string")
+        c.r_ty = c.t_str
+        return c
+    if name == "load_i64" or name == "load_f64":
+        if nargs != 1:
+            return cerr(c, "load expects exactly 1 argument (address: int)")
+        c = check_expr(c, node_child(c.p, arg))
+        if c.err == 1:
+            return c
+        if ty_tag(c, c.r_ty) != TY_INT():
+            return cerr(c, "load address must be int, found " + ty_display(c, c.r_ty))
+        if name == "load_f64":
+            c.r_ty = c.t_float
+        else:
+            c.r_ty = c.t_int
+        return c
+    if name == "load_u8":
+        if nargs != 2:
+            return cerr(c, "load_u8 expects (base: int|string, offset: int)")
+        c = check_expr(c, node_child(c.p, arg))
+        if c.err == 1:
+            return c
+        bt = ty_tag(c, c.r_ty)
+        if bt != TY_INT() and bt != TY_STR():
+            return cerr(c, "load_u8 base must be int or string")
+        c = check_expr(c, node_next(c.p, node_child(c.p, arg)))
+        if c.err == 1:
+            return c
+        if ty_tag(c, c.r_ty) != TY_INT():
+            return cerr(c, "load_u8 offset must be int")
+        c.r_ty = c.t_int
+        return c
+    if name == "store_i64" or name == "store_f64":
+        if nargs != 2:
+            return cerr(c, "store expects (address: int, value)")
+        c = check_expr(c, node_child(c.p, arg))
+        if c.err == 1:
+            return c
+        if ty_tag(c, c.r_ty) != TY_INT():
+            return cerr(c, "store address must be int, found " + ty_display(c, c.r_ty))
+        c = check_expr(c, node_next(c.p, node_child(c.p, arg)))
+        if c.err == 1:
+            return c
+        want = TY_INT()
+        if name == "store_f64":
+            want = TY_FLOAT()
+        if ty_tag(c, c.r_ty) != want:
+            return cerr(c, "store value has the wrong type: " + ty_display(c, c.r_ty))
+        c.r_ty = c.t_void
+        return c
+    if name == "store_u8":
+        if nargs != 3:
+            return cerr(c, "store_u8 expects (base: int|string, offset: int, value: int)")
+        a1 = node_child(c.p, arg)
+        a2 = node_next(c.p, a1)
+        a3 = node_next(c.p, a2)
+        c = check_expr(c, a1)
+        if c.err == 1:
+            return c
+        bt = ty_tag(c, c.r_ty)
+        if bt != TY_INT() and bt != TY_STR():
+            return cerr(c, "store_u8 base must be int or string")
+        c = check_expr(c, a2)
+        if c.err == 1:
+            return c
+        if ty_tag(c, c.r_ty) != TY_INT():
+            return cerr(c, "store_u8 offset must be int")
+        c = check_expr(c, a3)
+        if c.err == 1:
+            return c
+        if ty_tag(c, c.r_ty) != TY_INT():
+            return cerr(c, "store_u8 value must be int")
+        c.r_ty = c.t_void
+        return c
+    if name == "as_string":
+        if nargs != 1:
+            return cerr(c, "as_string expects exactly 1 argument (ptr: int)")
+        c = check_expr(c, node_child(c.p, arg))
+        if c.err == 1:
+            return c
+        if ty_tag(c, c.r_ty) != TY_INT():
+            return cerr(c, "as_string expects int, found " + ty_display(c, c.r_ty))
+        c.r_ty = c.t_str
+        return c
+    if name == "as_ptr":
+        if nargs != 1:
+            return cerr(c, "as_ptr expects exactly 1 argument (s: string)")
+        c = check_expr(c, node_child(c.p, arg))
+        if c.err == 1:
+            return c
+        if ty_tag(c, c.r_ty) != TY_STR():
+            return cerr(c, "as_ptr expects string, found " + ty_display(c, c.r_ty))
+        c.r_ty = c.t_int
+        return c
+
+    # ---- struct construction ----
+    fni = sig_index(c, name)
+    if fni == -1:
+        if struct_known(c, name) == 1:
+            return check_struct_lit(c, name, arg, nargs)
+        return cerr(c, "call to undefined function or struct '" + name + "'")
+
+    # ---- user function ----
+    np = vec_get(c.fn_nparam, fni)
+    if nargs != np:
+        return cerr(c, "function '" + name + "' expects " + str(np) + " argument(s), found " + str(nargs))
+    k = 0
+    a = arg
+    while a != -1 and c.err == 0:
+        if node_sval(c.p, a) != "":
+            return cerr(c, "function '" + name + "' takes positional arguments only")
+        pty = sig_param_ty(c, fni, k)
+        c = check_expr(c, node_child(c.p, a))
+        if c.err == 1:
+            return c
+        if ty_eq(c, c.r_ty, pty) == 0:
+            return cerr(c, "argument " + str(k + 1) + " of '" + name + "' must be " + ty_display(c, pty) + ", found " + ty_display(c, c.r_ty))
+        k = k + 1
+        a = node_next(c.p, a)
+    c.r_ty = vec_get(c.fn_ret, fni)
+    return c
+
+def check_struct_lit(c: CState, name: string, arg: int, nargs: int) -> CState:
+    a = arg
+    while a != -1 and c.err == 0:
+        fname = node_sval(c.p, a)
+        if fname == "":
+            return cerr(c, "struct '" + name + "' must be constructed with named fields: " + name + "(field=value, ...)")
+        c = field_lookup(c, name, fname)
+        if c.res_ok == 0:
+            return cerr(c, "struct '" + name + "' has no field '" + fname + "'")
+        fty = c.r_ty
+        c = check_expr(c, node_child(c.p, a))
+        if c.err == 1:
+            return c
+        if ty_eq(c, c.r_ty, fty) == 0:
+            return cerr(c, "field '" + fname + "' of '" + name + "' must be " + ty_display(c, fty) + ", found " + ty_display(c, c.r_ty))
+        a = node_next(c.p, a)
+    if c.err == 1:
+        return c
+    if nargs != struct_field_count(c, name):
+        return cerr(c, "struct literal '" + name + "' is missing field(s)")
+    c = alloc_ty(c, TY_STRUCT(), 0, 0, name)
+    return c
+
+# ---- function bodies ----
+
+def check_fn_body(c: CState, fn_idx: int) -> CState:
+    # find the body block (last child) and bind params
+    ch = node_child(c.p, fn_idx)
+    fname = node_sval(c.p, fn_idx)
+    fni = c.fn_name.len - 1
+    i = 0
+    while i < c.fn_name.len:
+        if as_string(vec_get(c.fn_name, i)) == fname:
+            fni = i
+        i = i + 1
+    body = -1
+    kid = ch
+    while kid != -1:
+        t = node_tag(c.p, kid)
+        if t == N_BLOCK():
+            body = kid
+        elif t == N_PARAM():
+            pname = node_sval(c.p, kid)
+            pty = sig_param_ty(c, fni, 0)
+            # find this param's type by walking its own chain index
+            k = 0
+            seen = 0
+            j = 0
+            while j < c.fp_fn.len:
+                if vec_get(c.fp_fn, j) == fni:
+                    if seen == 0 or pname == as_string(vec_get(c.fp_name, j)):
+                        pty = vec_get(c.fp_ty, j)
+                        if pname == as_string(vec_get(c.fp_name, j)):
+                            j = c.fp_fn.len
+                    seen = seen + 1
+                j = j + 1
+            c = scope_push(c, pname, pty)
+        kid = node_next(c.p, kid)
+    if body == -1:
+        return cerr(c, "malformed function body")
+    c.cur_ret = vec_get(c.fn_ret, fni)
+    c = check_block(c, body)
+    if c.err == 1:
+        return c
+    rty = c.cur_ret
+    if ty_tag(c, rty) != TY_VOID() and block_returns_all(c, body) == 0:
+        return cerr(c, "function '" + fname + "' does not return a value on all paths")
+    return c
+
+def check_all(c0: CState) -> CState:
+    c = c0
+    c.p = parse_program(c.p)
+    if c.p.err == 1:
+        return cerr(c, "parse error: " + c.p.errmsg)
+    c = collect_structs(c)
+    if c.err == 1:
+        return c
+    c = collect_sigs(c)
+    if c.err == 1:
+        return c
+    if sig_index(c, "main") == -1:
+        return cerr(c, "program has no 'main' function")
+    root = c.p.root
+    ch = node_child(c.p, root)
+    while ch != -1 and c.err == 0:
+        t = node_tag(c.p, ch)
+        if (t == N_FN() or t == N_EXTERN()) and node_ival(c.p, ch) == 0:
+            c.sc_name = vec_new()
+            c.sc_ty = vec_new()
+            c = check_fn_body(c, ch)
+        ch = node_next(c.p, ch)
+    return c

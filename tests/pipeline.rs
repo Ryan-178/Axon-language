@@ -1261,6 +1261,24 @@ fn stdlib_vec_grow_and_slots() {
 }
 
 #[test]
+fn infer_binding_from_as_string_and_as_ptr() {
+    // regression: unannotated bindings need codegen type hints for
+    // as_string (-> string) and as_ptr (-> int)
+    let out = build_and_run_with_stdlib(
+        r#"
+        def main() -> int:
+            s = "roundtrip"
+            p = as_ptr(s)
+            t = as_string(p)
+            print(t)
+            print(len(t))
+            return 0
+        "#,
+    );
+    assert_eq!(out, "roundtrip\n9\n");
+}
+
+#[test]
 fn stdlib_str_bytes_and_classes() {
     let out = build_and_run_with_stdlib(
         r#"
@@ -1336,6 +1354,69 @@ fn selfhost_lexer_token_stream() {
          RETURN\nIDENT x\nNEWLINE\n\
          DEDENT\n\
          EOF\n"
+    );
+}
+
+// ---- self-hosting stage 2: the Aoxn parser written in Aoxn (v0.11) ----
+
+#[test]
+fn selfhost_parser_ast_dump() {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let demo = manifest.join("selfhost").join("parse_demo.ax");
+    let exe = std::env::temp_dir()
+        .join("axon-tests")
+        .join(format!("selfhost-parse-{}.exe", std::process::id()));
+    std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+
+    aoxn::build_paths_exe(&[demo.display().to_string()], &exe, true)
+        .expect("self-host parser demo failed to compile");
+    let out = Command::new(&exe).output().expect("failed to run");
+    let _ = std::fs::remove_file(&exe);
+    assert!(out.status.success(), "self-host parser demo crashed: {:?}", out.status.code());
+
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "BLOCK program\n\
+         IMPORT \nSTR lib.ax\n\
+         STRUCT P\nFIELD v\nTY-int \n\
+         FN scale\n\
+         tag4 \nVAR P2\n\
+         PARAM arr\nTY-array  len=2\nTY-int \n\
+         PARAM k\nTY-int \n\
+         TY-int \n\
+         BLOCK \n\
+         LET total\nINT 0 0\n\
+         tag11 x\nVAR arr\n\
+         BLOCK \n\
+         LET total\nBINARY \nVAR total\nBINARY \nVAR x\nVAR k\n\
+         LET label\nBINARY \nSTR total=\nCALL str\nARG \nVAR total\n\
+         IF \nBINARY \nVAR total\nINT 0 0\n\
+         BLOCK \nRETURN \nVAR total\n\
+         RETURN \ntag28 \nINT 1 1\n"
+    );
+}
+
+// ---- self-hosting stage 3: the Aoxn type checker written in Aoxn (v0.11) ----
+
+#[test]
+fn selfhost_typechecker_accepts_and_rejects() {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let demo = manifest.join("selfhost").join("tycheck_demo.ax");
+    let exe = std::env::temp_dir()
+        .join("axon-tests")
+        .join(format!("selfhost-tycheck-{}.exe", std::process::id()));
+    std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+
+    aoxn::build_paths_exe(&[demo.display().to_string()], &exe, true)
+        .expect("self-host typechecker demo failed to compile");
+    let out = Command::new(&exe).output().expect("failed to run");
+    let _ = std::fs::remove_file(&exe);
+    assert!(out.status.success(), "self-host typechecker demo crashed: {:?}", out.status.code());
+
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "typecheck OK\n\
+         bad program rejected: '+' requires two int or two float operands, found (int, bool)\n"
     );
 }
 

@@ -1,0 +1,71 @@
+import "../stdlib/stdlib.ax"
+import "lexer.ax"
+import "parser.ax"
+
+def dump(p: PState, idx: int, depth: int):
+    pad = ""
+    i = 0
+    while i < depth:
+        pad = pad + ". "
+        i = i + 1
+    tag = node_tag(p, idx)
+    s = node_sval(p, idx)
+    v = node_ival(p, idx)
+    line = tag_name(tag) + " " + s
+    if tag == N_INT():
+        line = line + " " + str(v)
+    if tag == N_TYARRAY():
+        line = line + " len=" + str(v)
+    print(line)
+    c = node_child(p, idx)
+    while c != -1:
+        dump(p, c, depth + 1)
+        c = node_next(p, c)
+
+def tag_name(t: int) -> string:
+    if t == N_FN():
+        return "FN"
+    if t == N_PARAM():
+        return "PARAM"
+    if t == N_BLOCK():
+        return "BLOCK"
+    if t == N_LET():
+        return "LET"
+    if t == N_IF():
+        return "IF"
+    if t == N_RETURN():
+        return "RETURN"
+    if t == N_INT():
+        return "INT"
+    if t == N_STR():
+        return "STR"
+    if t == N_VAR():
+        return "VAR"
+    if t == N_BINARY():
+        return "BINARY"
+    if t == N_CALL():
+        return "CALL"
+    if t == N_ARG():
+        return "ARG"
+    if t == N_TYINT():
+        return "TY-int"
+    if t == N_TYARRAY():
+        return "TY-array"
+    if t == N_STRUCT():
+        return "STRUCT"
+    if t == N_FIELD():
+        return "FIELD"
+    if t == N_IMPORT():
+        return "IMPORT"
+    return "tag" + str(t)
+
+def main() -> int:
+    src = "import \"lib.ax\"\n\nstruct P:\n    v: int\n\ndef scale[P2](arr: [int; 2], k: int) -> int:\n    total = 0\n    for x in arr:\n        total = total + x * k\n    label = f\"total={total}\"\n    if total > 0:\n        return total\n    return -1\n"
+    tokens = lex_all(lex_state_new(src))
+    p = parser_new(tokens)
+    p = parse_program(p)
+    if p.err == 1:
+        print("PARSE ERROR: " + p.errmsg)
+        return 1
+    dump(p, p.root, 0)
+    return 0

@@ -1,0 +1,26 @@
+# Self-hosting stage-3 demo: the Aoxn type checker (written in Aoxn) checks a
+# parsed sample program, then rejects a deliberately ill-typed one.
+# Run: aoxn run selfhost\tycheck_demo.ax
+import "../stdlib/stdlib.ax"
+import "lexer.ax"
+import "parser.ax"
+import "typecheck.ax"
+
+def main() -> int:
+    src = "struct P:\n    x: int\n    y: int\n\ndef add(a: P, b: P) -> int:\n    return a.x + b.x\n\ndef main() -> int:\n    p = P(x=1, y=2)\n    q = P(x=3, y=4)\n    print(add(p, q))\n    return 0\n"
+
+    c = checker_new(lex_state_new(src))
+    c = check_all(c)
+    if c.err == 1:
+        print("TYPECHECK ERROR: " + c.errmsg)
+        return 1
+    print("typecheck OK")
+
+    bad = "def main() -> int:\n    x = 1\n    y = True\n    return x + y\n"
+    b = checker_new(lex_state_new(bad))
+    b = check_all(b)
+    if b.err == 0:
+        print("BUG: ill-typed program accepted")
+        return 1
+    print("bad program rejected: " + b.errmsg)
+    return 0
